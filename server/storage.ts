@@ -1,212 +1,172 @@
-import { 
-  type User, type InsertUser, 
-  type Staff, type InsertStaff,
-  type Schedule, type InsertSchedule,
-  type ShiftRequest, type InsertShiftRequest,
-  type ActivityLog, type InsertActivityLog,
-  type ScheduleSettings, type InsertScheduleSettings,
-  type NotificationSubscription, type InsertNotificationSubscription,
-  UserRole, ShiftRequestStatus, StaffStatus, ShiftType, ContractType, ShiftRequestType
+import {
+  users, User, InsertUser,
+  staff, Staff, InsertStaff,
+  shifts, Shift, InsertShift,
+  vacations, Vacation, InsertVacation,
+  changeRequests, ChangeRequest, InsertChangeRequest,
+  delegations, Delegation, InsertDelegation,
+  notifications, Notification, InsertNotification,
+  scheduleGenerations, ScheduleGeneration, InsertScheduleGeneration,
+  Role, ShiftType, RequestStatus
 } from "@shared/schema";
 
+// Storage interface that defines all the methods needed for the application
 export interface IStorage {
-  // User operations
-  getUser(id: number): Promise<User | undefined>;
+  // User methods
+  getUserById(id: number): Promise<User | undefined>;
   getUserByGoogleId(googleId: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
-  updateUserRole(id: number, role: UserRole): Promise<User | undefined>;
-  
-  // Staff operations
-  getStaff(id: number): Promise<Staff | undefined>;
+  updateUser(id: number, data: Partial<User>): Promise<User | undefined>;
+  listUsers(): Promise<User[]>;
+  listUsersByRole(role: Role): Promise<User[]>;
+
+  // Staff methods
+  getStaffById(id: number): Promise<Staff | undefined>;
   getStaffByUserId(userId: number): Promise<Staff | undefined>;
-  getStaffMembers(filter?: {
-    role?: UserRole,
-    contractType?: ContractType,
-    status?: StaffStatus
-  }): Promise<(Staff & { user: User })[]>;
   createStaff(staff: InsertStaff): Promise<Staff>;
-  updateStaff(id: number, data: Partial<InsertStaff>): Promise<Staff | undefined>;
-  deleteStaff(id: number): Promise<boolean>;
+  updateStaff(id: number, data: Partial<Staff>): Promise<Staff | undefined>;
+  listStaff(): Promise<Staff[]>;
+  listStaffByRole(role: Role): Promise<Staff[]>;
+  listStaffByDepartment(department: string): Promise<Staff[]>;
   
-  // Schedule operations
-  getSchedule(id: number): Promise<Schedule | undefined>;
-  getSchedulesByStaffId(staffId: number): Promise<Schedule[]>;
-  getSchedulesByDateRange(startDate: Date, endDate: Date, staffType?: UserRole): Promise<(Schedule & { staff: Staff & { user: User } })[]>;
-  createSchedule(schedule: InsertSchedule): Promise<Schedule>;
-  updateSchedule(id: number, data: Partial<InsertSchedule>): Promise<Schedule | undefined>;
-  deleteSchedule(id: number): Promise<boolean>;
+  // Shift methods
+  getShiftById(id: number): Promise<Shift | undefined>;
+  createShift(shift: InsertShift): Promise<Shift>;
+  updateShift(id: number, data: Partial<Shift>): Promise<Shift | undefined>;
+  listShiftsByStaffId(staffId: number): Promise<Shift[]>;
+  listShiftsByDateRange(startDate: Date, endDate: Date): Promise<Shift[]>;
+  listShiftsByStaffAndDateRange(staffId: number, startDate: Date, endDate: Date): Promise<Shift[]>;
   
-  // Shift request operations
-  getShiftRequest(id: number): Promise<ShiftRequest | undefined>;
-  getShiftRequestsByStaffId(staffId: number): Promise<ShiftRequest[]>;
-  getShiftRequestsByStatus(status: ShiftRequestStatus): Promise<(ShiftRequest & { requestedByStaff: Staff & { user: User } })[]>;
-  createShiftRequest(request: InsertShiftRequest): Promise<ShiftRequest>;
-  updateShiftRequestStatus(id: number, status: ShiftRequestStatus, approvedBy?: number): Promise<ShiftRequest | undefined>;
+  // Vacation methods
+  getVacationById(id: number): Promise<Vacation | undefined>;
+  createVacation(vacation: InsertVacation): Promise<Vacation>;
+  updateVacation(id: number, data: Partial<Vacation>): Promise<Vacation | undefined>;
+  listVacationsByStaffId(staffId: number): Promise<Vacation[]>;
+  listVacationsByDateRange(startDate: Date, endDate: Date): Promise<Vacation[]>;
   
-  // Activity log operations
-  createActivityLog(log: InsertActivityLog): Promise<ActivityLog>;
-  getRecentActivityLogs(limit: number): Promise<(ActivityLog & { user: User })[]>;
+  // Change request methods
+  getChangeRequestById(id: number): Promise<ChangeRequest | undefined>;
+  createChangeRequest(changeRequest: InsertChangeRequest): Promise<ChangeRequest>;
+  updateChangeRequest(id: number, data: Partial<ChangeRequest>): Promise<ChangeRequest | undefined>;
+  listChangeRequests(): Promise<ChangeRequest[]>;
+  listChangeRequestsByStaffId(staffId: number): Promise<ChangeRequest[]>;
+  listChangeRequestsByStatus(status: RequestStatus): Promise<ChangeRequest[]>;
   
-  // Schedule settings operations
-  createScheduleSettings(settings: InsertScheduleSettings): Promise<ScheduleSettings>;
-  getScheduleSettings(id: number): Promise<ScheduleSettings | undefined>;
+  // Delegation methods
+  getDelegationById(id: number): Promise<Delegation | undefined>;
+  createDelegation(delegation: InsertDelegation): Promise<Delegation>;
+  updateDelegation(id: number, data: Partial<Delegation>): Promise<Delegation | undefined>;
+  listDelegationsByHeadNurse(headNurseId: number): Promise<Delegation[]>;
+  listActiveDelegations(): Promise<Delegation[]>;
   
-  // Notification subscriptions
-  saveNotificationSubscription(subscription: InsertNotificationSubscription): Promise<NotificationSubscription>;
-  getNotificationSubscriptionsByUserId(userId: number): Promise<NotificationSubscription[]>;
+  // Notification methods
+  getNotificationById(id: number): Promise<Notification | undefined>;
+  createNotification(notification: InsertNotification): Promise<Notification>;
+  updateNotification(id: number, data: Partial<Notification>): Promise<Notification | undefined>;
+  listNotificationsByUserId(userId: number): Promise<Notification[]>;
+  listUnreadNotificationsByUserId(userId: number): Promise<Notification[]>;
   
-  // Delegation operations
-  setDelegation(headNurseId: number, delegatedStaffId: number, active: boolean): Promise<Staff | undefined>;
-  getDelegatedStaff(headNurseId: number): Promise<(Staff & { user: User })[]>;
+  // Schedule generation methods
+  getScheduleGenerationById(id: number): Promise<ScheduleGeneration | undefined>;
+  createScheduleGeneration(scheduleGeneration: InsertScheduleGeneration): Promise<ScheduleGeneration>;
+  listScheduleGenerations(): Promise<ScheduleGeneration[]>;
 }
 
+// In-memory implementation of the storage interface
 export class MemStorage implements IStorage {
   private users: Map<number, User>;
   private staff: Map<number, Staff>;
-  private schedules: Map<number, Schedule>;
-  private shiftRequests: Map<number, ShiftRequest>;
-  private activityLogs: Map<number, ActivityLog>;
-  private scheduleSettings: Map<number, ScheduleSettings>;
-  private notificationSubscriptions: Map<number, NotificationSubscription>;
+  private shifts: Map<number, Shift>;
+  private vacations: Map<number, Vacation>;
+  private changeRequests: Map<number, ChangeRequest>;
+  private delegations: Map<number, Delegation>;
+  private notifications: Map<number, Notification>;
+  private scheduleGenerations: Map<number, ScheduleGeneration>;
   
-  private currentUserId: number;
-  private currentStaffId: number;
-  private currentScheduleId: number;
-  private currentRequestId: number;
-  private currentLogId: number;
-  private currentSettingsId: number;
-  private currentSubscriptionId: number;
-  
+  private nextUserId = 1;
+  private nextStaffId = 1;
+  private nextShiftId = 1;
+  private nextVacationId = 1;
+  private nextChangeRequestId = 1;
+  private nextDelegationId = 1;
+  private nextNotificationId = 1;
+  private nextScheduleGenerationId = 1;
+
   constructor() {
     this.users = new Map();
     this.staff = new Map();
-    this.schedules = new Map();
-    this.shiftRequests = new Map();
-    this.activityLogs = new Map();
-    this.scheduleSettings = new Map();
-    this.notificationSubscriptions = new Map();
+    this.shifts = new Map();
+    this.vacations = new Map();
+    this.changeRequests = new Map();
+    this.delegations = new Map();
+    this.notifications = new Map();
+    this.scheduleGenerations = new Map();
     
-    this.currentUserId = 1;
-    this.currentStaffId = 1;
-    this.currentScheduleId = 1;
-    this.currentRequestId = 1;
-    this.currentLogId = 1;
-    this.currentSettingsId = 1;
-    this.currentSubscriptionId = 1;
-    
-    // Initialize with some data
-    this.initializeData();
+    // Add some initial demo data
+    this.initializeDemoData();
   }
-  
-  private initializeData() {
-    // We'll seed with a head nurse user to start with
-    const headNurse: User = {
-      id: this.currentUserId++,
-      googleId: "example_google_id_head_nurse",
-      email: "headnurse@example.com",
-      name: "Maria Rossi",
-      role: UserRole.HEAD_NURSE,
-      avatar: null,
-      createdAt: new Date()
-    };
-    this.users.set(headNurse.id, headNurse);
-    
-    const headNurseStaff: Staff = {
-      id: this.currentStaffId++,
-      userId: headNurse.id,
-      staffId: "NRS0001",
-      contractType: ContractType.FULL_TIME,
-      partTimePercentage: null,
-      status: StaffStatus.ACTIVE,
-      delegatedBy: null,
-      delegationActive: false
-    };
-    this.staff.set(headNurseStaff.id, headNurseStaff);
+
+  private initializeDemoData() {
+    // This would be filled with demo data in a real app
+    // but we're avoiding mock data as per instructions
   }
-  
-  // User operations
-  async getUser(id: number): Promise<User | undefined> {
+
+  // User methods
+  async getUserById(id: number): Promise<User | undefined> {
     return this.users.get(id);
   }
-  
+
   async getUserByGoogleId(googleId: string): Promise<User | undefined> {
     return Array.from(this.users.values()).find(user => user.googleId === googleId);
   }
-  
+
   async getUserByEmail(email: string): Promise<User | undefined> {
     return Array.from(this.users.values()).find(user => user.email === email);
   }
-  
-  async createUser(user: InsertUser): Promise<User> {
-    const id = this.currentUserId++;
-    const newUser: User = { ...user, id, createdAt: new Date() };
-    this.users.set(id, newUser);
-    return newUser;
+
+  async createUser(userData: InsertUser): Promise<User> {
+    const id = this.nextUserId++;
+    const createdAt = new Date();
+    const user: User = { ...userData, id, createdAt };
+    this.users.set(id, user);
+    return user;
   }
-  
-  async updateUserRole(id: number, role: UserRole): Promise<User | undefined> {
+
+  async updateUser(id: number, data: Partial<User>): Promise<User | undefined> {
     const user = this.users.get(id);
     if (!user) return undefined;
     
-    const updatedUser = { ...user, role };
+    const updatedUser = { ...user, ...data };
     this.users.set(id, updatedUser);
     return updatedUser;
   }
-  
-  // Staff operations
-  async getStaff(id: number): Promise<Staff | undefined> {
+
+  async listUsers(): Promise<User[]> {
+    return Array.from(this.users.values());
+  }
+
+  async listUsersByRole(role: Role): Promise<User[]> {
+    return Array.from(this.users.values()).filter(user => user.role === role);
+  }
+
+  // Staff methods
+  async getStaffById(id: number): Promise<Staff | undefined> {
     return this.staff.get(id);
   }
-  
+
   async getStaffByUserId(userId: number): Promise<Staff | undefined> {
     return Array.from(this.staff.values()).find(staff => staff.userId === userId);
   }
-  
-  async getStaffMembers(filter?: {
-    role?: UserRole,
-    contractType?: ContractType,
-    status?: StaffStatus
-  }): Promise<(Staff & { user: User })[]> {
-    let staffMembers = Array.from(this.staff.values());
-    
-    // Apply filters
-    if (filter) {
-      const { role, contractType, status } = filter;
-      
-      if (role) {
-        const staffWithRole = staffMembers.filter(staff => {
-          const user = this.users.get(staff.userId);
-          return user && user.role === role;
-        });
-        staffMembers = staffWithRole;
-      }
-      
-      if (contractType) {
-        staffMembers = staffMembers.filter(staff => staff.contractType === contractType);
-      }
-      
-      if (status) {
-        staffMembers = staffMembers.filter(staff => staff.status === status);
-      }
-    }
-    
-    // Join with users
-    return staffMembers.map(staff => {
-      const user = this.users.get(staff.userId);
-      if (!user) throw new Error(`User not found for staff member: ${staff.id}`);
-      return { ...staff, user };
-    });
+
+  async createStaff(staffData: InsertStaff): Promise<Staff> {
+    const id = this.nextStaffId++;
+    const staff: Staff = { ...staffData, id };
+    this.staff.set(id, staff);
+    return staff;
   }
-  
-  async createStaff(staff: InsertStaff): Promise<Staff> {
-    const id = this.currentStaffId++;
-    const newStaff: Staff = { ...staff, id };
-    this.staff.set(id, newStaff);
-    return newStaff;
-  }
-  
-  async updateStaff(id: number, data: Partial<InsertStaff>): Promise<Staff | undefined> {
+
+  async updateStaff(id: number, data: Partial<Staff>): Promise<Staff | undefined> {
     const staff = this.staff.get(id);
     if (!staff) return undefined;
     
@@ -214,200 +174,224 @@ export class MemStorage implements IStorage {
     this.staff.set(id, updatedStaff);
     return updatedStaff;
   }
-  
-  async deleteStaff(id: number): Promise<boolean> {
-    return this.staff.delete(id);
+
+  async listStaff(): Promise<Staff[]> {
+    return Array.from(this.staff.values());
   }
-  
-  // Schedule operations
-  async getSchedule(id: number): Promise<Schedule | undefined> {
-    return this.schedules.get(id);
+
+  async listStaffByRole(role: Role): Promise<Staff[]> {
+    return Array.from(this.staff.values()).filter(staff => staff.role === role);
   }
-  
-  async getSchedulesByStaffId(staffId: number): Promise<Schedule[]> {
-    return Array.from(this.schedules.values()).filter(schedule => schedule.staffId === staffId);
+
+  async listStaffByDepartment(department: string): Promise<Staff[]> {
+    return Array.from(this.staff.values()).filter(staff => staff.department === department);
   }
-  
-  async getSchedulesByDateRange(startDate: Date, endDate: Date, staffType?: UserRole): Promise<(Schedule & { staff: Staff & { user: User } })[]> {
-    let schedules = Array.from(this.schedules.values()).filter(schedule => {
-      return schedule.date >= startDate && schedule.date <= endDate;
-    });
+
+  // Shift methods
+  async getShiftById(id: number): Promise<Shift | undefined> {
+    return this.shifts.get(id);
+  }
+
+  async createShift(shiftData: InsertShift): Promise<Shift> {
+    const id = this.nextShiftId++;
+    const createdAt = new Date();
+    const updatedAt = new Date();
+    const shift: Shift = { ...shiftData, id, createdAt, updatedAt };
+    this.shifts.set(id, shift);
+    return shift;
+  }
+
+  async updateShift(id: number, data: Partial<Shift>): Promise<Shift | undefined> {
+    const shift = this.shifts.get(id);
+    if (!shift) return undefined;
     
-    if (staffType) {
-      schedules = schedules.filter(schedule => {
-        const staff = this.staff.get(schedule.staffId);
-        if (!staff) return false;
-        
-        const user = this.users.get(staff.userId);
-        return user?.role === staffType;
-      });
-    }
-    
-    return schedules.map(schedule => {
-      const staff = this.staff.get(schedule.staffId);
-      if (!staff) throw new Error(`Staff not found for schedule: ${schedule.id}`);
-      
-      const user = this.users.get(staff.userId);
-      if (!user) throw new Error(`User not found for staff: ${staff.id}`);
-      
-      return {
-        ...schedule,
-        staff: { ...staff, user }
-      };
-    });
+    const updatedAt = new Date();
+    const updatedShift = { ...shift, ...data, updatedAt };
+    this.shifts.set(id, updatedShift);
+    return updatedShift;
   }
-  
-  async createSchedule(schedule: InsertSchedule): Promise<Schedule> {
-    const id = this.currentScheduleId++;
-    const now = new Date();
-    const newSchedule: Schedule = { 
-      ...schedule, 
-      id, 
-      createdAt: now,
-      updatedAt: now
-    };
-    this.schedules.set(id, newSchedule);
-    return newSchedule;
+
+  async listShiftsByStaffId(staffId: number): Promise<Shift[]> {
+    return Array.from(this.shifts.values()).filter(shift => shift.staffId === staffId);
   }
-  
-  async updateSchedule(id: number, data: Partial<InsertSchedule>): Promise<Schedule | undefined> {
-    const schedule = this.schedules.get(id);
-    if (!schedule) return undefined;
-    
-    const updatedSchedule = { 
-      ...schedule, 
-      ...data,
-      updatedAt: new Date()
-    };
-    this.schedules.set(id, updatedSchedule);
-    return updatedSchedule;
-  }
-  
-  async deleteSchedule(id: number): Promise<boolean> {
-    return this.schedules.delete(id);
-  }
-  
-  // Shift request operations
-  async getShiftRequest(id: number): Promise<ShiftRequest | undefined> {
-    return this.shiftRequests.get(id);
-  }
-  
-  async getShiftRequestsByStaffId(staffId: number): Promise<ShiftRequest[]> {
-    return Array.from(this.shiftRequests.values()).filter(request => request.requestedBy === staffId);
-  }
-  
-  async getShiftRequestsByStatus(status: ShiftRequestStatus): Promise<(ShiftRequest & { requestedByStaff: Staff & { user: User } })[]> {
-    const requests = Array.from(this.shiftRequests.values()).filter(request => request.status === status);
-    
-    return requests.map(request => {
-      const staff = this.staff.get(request.requestedBy);
-      if (!staff) throw new Error(`Staff not found for request: ${request.id}`);
-      
-      const user = this.users.get(staff.userId);
-      if (!user) throw new Error(`User not found for staff: ${staff.id}`);
-      
-      return {
-        ...request,
-        requestedByStaff: { ...staff, user }
-      };
+
+  async listShiftsByDateRange(startDate: Date, endDate: Date): Promise<Shift[]> {
+    return Array.from(this.shifts.values()).filter(shift => {
+      const shiftDate = new Date(shift.date);
+      return shiftDate >= startDate && shiftDate <= endDate;
     });
   }
-  
-  async createShiftRequest(request: InsertShiftRequest): Promise<ShiftRequest> {
-    const id = this.currentRequestId++;
-    const now = new Date();
-    const newRequest: ShiftRequest = { 
-      ...request, 
-      id, 
-      createdAt: now,
-      updatedAt: now
-    };
-    this.shiftRequests.set(id, newRequest);
-    return newRequest;
+
+  async listShiftsByStaffAndDateRange(staffId: number, startDate: Date, endDate: Date): Promise<Shift[]> {
+    return Array.from(this.shifts.values()).filter(shift => {
+      const shiftDate = new Date(shift.date);
+      return shift.staffId === staffId && shiftDate >= startDate && shiftDate <= endDate;
+    });
   }
-  
-  async updateShiftRequestStatus(id: number, status: ShiftRequestStatus, approvedBy?: number): Promise<ShiftRequest | undefined> {
-    const request = this.shiftRequests.get(id);
+
+  // Vacation methods
+  async getVacationById(id: number): Promise<Vacation | undefined> {
+    return this.vacations.get(id);
+  }
+
+  async createVacation(vacationData: InsertVacation): Promise<Vacation> {
+    const id = this.nextVacationId++;
+    const createdAt = new Date();
+    const vacation: Vacation = { ...vacationData, id, createdAt };
+    this.vacations.set(id, vacation);
+    return vacation;
+  }
+
+  async updateVacation(id: number, data: Partial<Vacation>): Promise<Vacation | undefined> {
+    const vacation = this.vacations.get(id);
+    if (!vacation) return undefined;
+    
+    const updatedVacation = { ...vacation, ...data };
+    this.vacations.set(id, updatedVacation);
+    return updatedVacation;
+  }
+
+  async listVacationsByStaffId(staffId: number): Promise<Vacation[]> {
+    return Array.from(this.vacations.values()).filter(vacation => vacation.staffId === staffId);
+  }
+
+  async listVacationsByDateRange(startDate: Date, endDate: Date): Promise<Vacation[]> {
+    return Array.from(this.vacations.values()).filter(vacation => {
+      const vacStartDate = new Date(vacation.startDate);
+      const vacEndDate = new Date(vacation.endDate);
+      return (
+        (vacStartDate >= startDate && vacStartDate <= endDate) ||
+        (vacEndDate >= startDate && vacEndDate <= endDate) ||
+        (vacStartDate <= startDate && vacEndDate >= endDate)
+      );
+    });
+  }
+
+  // Change request methods
+  async getChangeRequestById(id: number): Promise<ChangeRequest | undefined> {
+    return this.changeRequests.get(id);
+  }
+
+  async createChangeRequest(requestData: InsertChangeRequest): Promise<ChangeRequest> {
+    const id = this.nextChangeRequestId++;
+    const createdAt = new Date();
+    const updatedAt = new Date();
+    const status: RequestStatus = 'pending';
+    const changeRequest: ChangeRequest = { ...requestData, id, status, createdAt, updatedAt };
+    this.changeRequests.set(id, changeRequest);
+    return changeRequest;
+  }
+
+  async updateChangeRequest(id: number, data: Partial<ChangeRequest>): Promise<ChangeRequest | undefined> {
+    const request = this.changeRequests.get(id);
     if (!request) return undefined;
     
-    const updatedRequest = { 
-      ...request, 
-      status,
-      approvedBy,
-      updatedAt: new Date()
-    };
-    this.shiftRequests.set(id, updatedRequest);
+    const updatedAt = new Date();
+    const updatedRequest = { ...request, ...data, updatedAt };
+    this.changeRequests.set(id, updatedRequest);
     return updatedRequest;
   }
-  
-  // Activity log operations
-  async createActivityLog(log: InsertActivityLog): Promise<ActivityLog> {
-    const id = this.currentLogId++;
-    const newLog: ActivityLog = { ...log, id, createdAt: new Date() };
-    this.activityLogs.set(id, newLog);
-    return newLog;
+
+  async listChangeRequests(): Promise<ChangeRequest[]> {
+    return Array.from(this.changeRequests.values());
   }
-  
-  async getRecentActivityLogs(limit: number): Promise<(ActivityLog & { user: User })[]> {
-    const logs = Array.from(this.activityLogs.values())
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, limit);
+
+  async listChangeRequestsByStaffId(staffId: number): Promise<ChangeRequest[]> {
+    return Array.from(this.changeRequests.values()).filter(req => req.staffId === staffId);
+  }
+
+  async listChangeRequestsByStatus(status: RequestStatus): Promise<ChangeRequest[]> {
+    return Array.from(this.changeRequests.values()).filter(req => req.status === status);
+  }
+
+  // Delegation methods
+  async getDelegationById(id: number): Promise<Delegation | undefined> {
+    return this.delegations.get(id);
+  }
+
+  async createDelegation(delegationData: InsertDelegation): Promise<Delegation> {
+    const id = this.nextDelegationId++;
+    const createdAt = new Date();
+    const delegation: Delegation = { ...delegationData, id, createdAt };
+    this.delegations.set(id, delegation);
+    return delegation;
+  }
+
+  async updateDelegation(id: number, data: Partial<Delegation>): Promise<Delegation | undefined> {
+    const delegation = this.delegations.get(id);
+    if (!delegation) return undefined;
     
-    return logs.map(log => {
-      const user = this.users.get(log.userId);
-      if (!user) throw new Error(`User not found for log: ${log.id}`);
-      return { ...log, user };
-    });
+    const updatedDelegation = { ...delegation, ...data };
+    this.delegations.set(id, updatedDelegation);
+    return updatedDelegation;
   }
-  
-  // Schedule settings operations
-  async createScheduleSettings(settings: InsertScheduleSettings): Promise<ScheduleSettings> {
-    const id = this.currentSettingsId++;
-    const newSettings: ScheduleSettings = { ...settings, id, createdAt: new Date() };
-    this.scheduleSettings.set(id, newSettings);
-    return newSettings;
-  }
-  
-  async getScheduleSettings(id: number): Promise<ScheduleSettings | undefined> {
-    return this.scheduleSettings.get(id);
-  }
-  
-  // Notification subscriptions
-  async saveNotificationSubscription(subscription: InsertNotificationSubscription): Promise<NotificationSubscription> {
-    const id = this.currentSubscriptionId++;
-    const newSubscription: NotificationSubscription = { ...subscription, id, createdAt: new Date() };
-    this.notificationSubscriptions.set(id, newSubscription);
-    return newSubscription;
-  }
-  
-  async getNotificationSubscriptionsByUserId(userId: number): Promise<NotificationSubscription[]> {
-    return Array.from(this.notificationSubscriptions.values()).filter(sub => sub.userId === userId);
-  }
-  
-  // Delegation operations
-  async setDelegation(headNurseId: number, delegatedStaffId: number, active: boolean): Promise<Staff | undefined> {
-    const staff = this.staff.get(delegatedStaffId);
-    if (!staff) return undefined;
-    
-    const updatedStaff = { 
-      ...staff, 
-      delegatedBy: active ? headNurseId : null,
-      delegationActive: active
-    };
-    this.staff.set(delegatedStaffId, updatedStaff);
-    return updatedStaff;
-  }
-  
-  async getDelegatedStaff(headNurseId: number): Promise<(Staff & { user: User })[]> {
-    const delegatedStaff = Array.from(this.staff.values()).filter(staff => 
-      staff.delegatedBy === headNurseId && staff.delegationActive
+
+  async listDelegationsByHeadNurse(headNurseId: number): Promise<Delegation[]> {
+    return Array.from(this.delegations.values()).filter(
+      delegation => delegation.headNurseId === headNurseId
     );
-    
-    return delegatedStaff.map(staff => {
-      const user = this.users.get(staff.userId);
-      if (!user) throw new Error(`User not found for staff: ${staff.id}`);
-      return { ...staff, user };
+  }
+
+  async listActiveDelegations(): Promise<Delegation[]> {
+    const today = new Date();
+    return Array.from(this.delegations.values()).filter(delegation => {
+      const startDate = new Date(delegation.startDate);
+      const endDate = delegation.endDate ? new Date(delegation.endDate) : null;
+      return delegation.active && startDate <= today && (!endDate || endDate >= today);
     });
+  }
+
+  // Notification methods
+  async getNotificationById(id: number): Promise<Notification | undefined> {
+    return this.notifications.get(id);
+  }
+
+  async createNotification(notificationData: InsertNotification): Promise<Notification> {
+    const id = this.nextNotificationId++;
+    const createdAt = new Date();
+    const read = false;
+    const notification: Notification = { ...notificationData, id, read, createdAt };
+    this.notifications.set(id, notification);
+    return notification;
+  }
+
+  async updateNotification(id: number, data: Partial<Notification>): Promise<Notification | undefined> {
+    const notification = this.notifications.get(id);
+    if (!notification) return undefined;
+    
+    const updatedNotification = { ...notification, ...data };
+    this.notifications.set(id, updatedNotification);
+    return updatedNotification;
+  }
+
+  async listNotificationsByUserId(userId: number): Promise<Notification[]> {
+    return Array.from(this.notifications.values())
+      .filter(notification => notification.userId === userId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  async listUnreadNotificationsByUserId(userId: number): Promise<Notification[]> {
+    return Array.from(this.notifications.values())
+      .filter(notification => notification.userId === userId && !notification.read)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  // Schedule generation methods
+  async getScheduleGenerationById(id: number): Promise<ScheduleGeneration | undefined> {
+    return this.scheduleGenerations.get(id);
+  }
+
+  async createScheduleGeneration(data: InsertScheduleGeneration): Promise<ScheduleGeneration> {
+    const id = this.nextScheduleGenerationId++;
+    const createdAt = new Date();
+    const scheduleGeneration: ScheduleGeneration = { ...data, id, createdAt };
+    this.scheduleGenerations.set(id, scheduleGeneration);
+    return scheduleGeneration;
+  }
+
+  async listScheduleGenerations(): Promise<ScheduleGeneration[]> {
+    return Array.from(this.scheduleGenerations.values())
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 }
 

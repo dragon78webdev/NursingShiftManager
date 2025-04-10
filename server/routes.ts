@@ -1,771 +1,1274 @@
-import type { Express, Request, Response } from "express";
+import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import session from "express-session";
+import { setupAuth, isAuthenticated, isHeadNurse, isHeadNurseOrDelegate } from "./auth";
 import passport from "passport";
-import { Strategy as GoogleStrategy } from "passport-google-oauth20";
+import session from "express-session";
+import { setupEmail, sendShiftChangeRequestEmail, sendScheduleEmail, sendChangeRequestStatusEmail } from "./email";
+import { generateSchedule, createPdf } from "./scheduler";
+import { z } from "zod";
+import { WebSocket, WebSocketServer } from "ws";
 import { 
-  UserRole, ShiftRequestStatus, StaffStatus, 
-  ShiftType, ShiftRequestType, ContractType,
-  insertUserSchema, insertStaffSchema, insertScheduleSchema,
-  insertShiftRequestSchema, insertActivityLogSchema, insertScheduleSettingsSchema,
-  insertNotificationSubscriptionSchema
+  insertUserSchema, 
+  insertChangeRequestSchema, 
+  insertVacationSchema,
+  Role,
+  ShiftType
 } from "@shared/schema";
-import { ZodError } from "zod";
-import { fromZodError } from "zod-validation-error";
-import { generateSchedule } from "../client/src/lib/schedule-generator";
-import { generatePDF } from "../client/src/lib/pdf-generator";
-import * as fs from "fs";
-import * as path from "path";
-import { WebSocketServer } from "ws";
-import * as nodemailer from "nodemailer";
+import multer from "multer";
 import * as XLSX from "xlsx";
-import { nanoid } from "nanoid";
 import MemoryStore from "memorystore";
 
-// Create memory store for sessions
-const SessionStore = MemoryStore(session);
+const MemoryStoreSession = MemoryStore(session);
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  const httpServer = createServer(app);
-  
-  // Create WebSocket server for real-time notifications
-  const wss = new WebSocketServer({ server: httpServer });
-  const clients = new Map();
-  
-  wss.on("connection", (ws) => {
-    const id = nanoid();
-    clients.set(id, ws);
-    
-    ws.on("message", (message) => {
-      try {
-        const data = JSON.parse(message.toString());
-        // Check authentication if needed
-      } catch (err) {
-        console.error("Invalid WebSocket message format");
-      }
-    });
-    
-    ws.on("close", () => {
-      clients.delete(id);
-    });
-  });
-  
-  // Configure session
+  // Session setup
   app.use(
     session({
       secret: process.env.SESSION_SECRET || "nurse-scheduler-secret",
       resave: false,
       saveUninitialized: false,
-      cookie: { maxAge: 30 * 24 * 60 * 60 * 1000 }, // 30 days
-      store: new SessionStore({
-        checkPeriod: 86400000 // prune expired entries every 24h
-      })
+      cookie: {
+        secure: process.env.NODE_ENV === "production",
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      },
+      store: new MemoryStoreSession({
+        checkPeriod: 86400000, // prune expired entries every 24h
+      }),
     })
   );
-  
-  // Initialize Passport
+
+  // Initialize passport and session
+  const passport = setupAuth(app);
   app.use(passport.initialize());
   app.use(passport.session());
-  
-  // Configure Google OAuth Strategy
-  passport.use(
-    new GoogleStrategy(
-      {
-        clientID: process.env.GOOGLE_CLIENT_ID || "google-client-id",
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET || "google-client-secret",
-        callbackURL: "/api/auth/google/callback",
-        scope: ["profile", "email"],
-      },
-      async (accessToken, refreshToken, profile, done) => {
-        try {
-          // Check if user exists
-          let user = await storage.getUserByGoogleId(profile.id);
-          
-          if (!user) {
-            // New user - create account
-            const email = profile.emails?.[0]?.value;
-            if (!email) {
-              return done(new Error("Email information not provided by Google"));
-            }
-            
-            const newUser = await storage.createUser({
-              googleId: profile.id,
-              email,
-              name: profile.displayName,
-              role: UserRole.NURSE, // Default role, will be updated by the user
-              avatar: profile.photos?.[0]?.value || null
-            });
-            
-            return done(null, newUser);
-          }
-          
-          return done(null, user);
-        } catch (error) {
-          return done(error);
+
+  // Setup email service
+  setupEmail();
+
+  // Setup multer for file uploads
+  const upload = multer({ 
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: 5 * 1024 * 1024, // 5MB max file size
+    }
+  });
+
+  // Create HTTP server - make sure it's properly configured for Replit
+  const httpServer = createServer(app);
+
+  // Setup WebSocket server for push notifications
+  const wss = new WebSocketServer({ server: httpServer });
+  const clients = new Map<number, WebSocket[]>();
+
+  wss.on("connection", (ws, req) => {
+    // The user ID should be sent as a query parameter in the WebSocket URL
+    const url = new URL(req.url || "", `http://${req.headers.host}`);
+    const userId = Number(url.searchParams.get("userId"));
+
+    if (!userId) {
+      ws.close();
+      return;
+    }
+
+    // Store the connection
+    if (!clients.has(userId)) {
+      clients.set(userId, []);
+    }
+    clients.get(userId)?.push(ws);
+
+    ws.on("close", () => {
+      // Remove the connection when it's closed
+      const userConnections = clients.get(userId);
+      if (userConnections) {
+        const index = userConnections.indexOf(ws);
+        if (index !== -1) {
+          userConnections.splice(index, 1);
+        }
+        if (userConnections.length === 0) {
+          clients.delete(userId);
         }
       }
-    )
+    });
+  });
+
+  // Function to send push notification
+  const sendPushNotification = (userId: number, notification: any) => {
+    const userConnections = clients.get(userId);
+    if (userConnections) {
+      userConnections.forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(notification));
+        }
+      });
+    }
+  };
+
+  // Auth routes
+  app.get(
+    "/api/auth/google",
+    passport.authenticate("google", { scope: ["profile", "email"] })
   );
-  
-  // Serialize and deserialize user
-  passport.serializeUser((user: any, done) => {
-    done(null, user.id);
-  });
-  
-  passport.deserializeUser(async (id: number, done) => {
-    try {
-      const user = await storage.getUser(id);
-      done(null, user);
-    } catch (error) {
-      done(error);
-    }
-  });
-  
-  // Middleware to check if user is authenticated
-  const isAuthenticated = (req: Request, res: Response, next: () => void) => {
-    if (req.isAuthenticated()) {
-      return next();
-    }
-    res.status(401).json({ message: "Unauthorized" });
-  };
-  
-  // Middleware to check if user is a head nurse
-  const isHeadNurse = (req: Request, res: Response, next: () => void) => {
-    if (req.isAuthenticated() && req.user && (req.user as any).role === UserRole.HEAD_NURSE) {
-      return next();
-    }
-    res.status(403).json({ message: "Forbidden: requires head nurse role" });
-  };
-  
-  // Middleware to check if user is a head nurse or has delegation
-  const isHeadNurseOrDelegated = async (req: Request, res: Response, next: () => void) => {
-    if (!req.isAuthenticated() || !req.user) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
-    
-    const user = req.user as any;
-    
-    // If user is head nurse, proceed
-    if (user.role === UserRole.HEAD_NURSE) {
-      return next();
-    }
-    
-    // Check if user has delegation
-    const staff = await storage.getStaffByUserId(user.id);
-    if (staff?.delegationActive) {
-      return next();
-    }
-    
-    res.status(403).json({ message: "Forbidden: requires head nurse role or delegation" });
-  };
-  
-  // Authentication routes
-  app.get("/api/auth/google", passport.authenticate("google"));
-  
+
   app.get(
     "/api/auth/google/callback",
     passport.authenticate("google", {
-      successRedirect: "/",
-      failureRedirect: "/login?error=auth_failed"
-    })
+      failureRedirect: "/login",
+    }),
+    (req, res) => {
+      // Check if user has completed first login
+      const user = req.user as any;
+      if (!user.department || !user.facility || user.role === 'nurse') {
+        // User needs to complete profile
+        res.redirect("/?firstLogin=true");
+      } else {
+        // User has completed profile
+        res.redirect("/");
+      }
+    }
   );
-  
-  app.get("/api/auth/session", (req, res) => {
+
+  // Local auth route for development
+  app.post(
+    "/api/auth/login",
+    passport.authenticate("local"),
+    (req, res) => {
+      // Check if user has completed first login
+      const user = req.user as any;
+      if (!user.department || !user.facility || user.role === 'nurse') {
+        // User needs to complete profile
+        res.json({ success: true, firstLogin: true });
+      } else {
+        // User has completed profile
+        res.json({ success: true, firstLogin: false });
+      }
+    }
+  );
+
+  app.get("/api/auth/user", (req, res) => {
     if (req.isAuthenticated()) {
-      res.json({ 
-        authenticated: true, 
-        user: req.user 
-      });
+      res.json(req.user);
     } else {
-      res.json({ 
-        authenticated: false 
-      });
+      res.status(401).json({ message: "Not authenticated" });
     }
   });
-  
-  app.post("/api/auth/set-role", isAuthenticated, async (req, res) => {
+
+  app.post("/api/auth/logout", (req, res) => {
+    req.logout(() => {
+      res.json({ success: true });
+    });
+  });
+
+  // Complete first login profile
+  app.post("/api/auth/complete-profile", isAuthenticated, async (req, res) => {
     try {
-      const { role } = req.body;
-      
-      if (!Object.values(UserRole).includes(role)) {
-        return res.status(400).json({ message: "Invalid role" });
-      }
-      
       const userId = (req.user as any).id;
-      const updatedUser = await storage.updateUserRole(userId, role);
+      
+      const completeProfileSchema = z.object({
+        role: z.enum(["nurse", "oss", "head_nurse"]),
+        department: z.string().min(1),
+        facility: z.string().min(1),
+      });
+      
+      const validatedData = completeProfileSchema.parse(req.body);
+      
+      const updatedUser = await storage.updateUser(userId, validatedData);
       
       if (!updatedUser) {
         return res.status(404).json({ message: "User not found" });
       }
       
-      // Create staff record if it doesn't exist
-      const existingStaff = await storage.getStaffByUserId(userId);
-      
-      if (!existingStaff) {
-        const prefix = role === UserRole.NURSE ? "NRS" : "OSS";
-        const staffCount = (await storage.getStaffMembers()).length;
-        const staffId = `${prefix}${String(staffCount + 1).padStart(4, '0')}`;
-        
-        await storage.createStaff({
-          userId,
-          staffId,
-          contractType: ContractType.FULL_TIME,
-          partTimePercentage: null,
-          status: StaffStatus.ACTIVE,
-          delegatedBy: null,
-          delegationActive: false
-        });
-      }
-      
-      // Log activity
-      await storage.createActivityLog({
-        userId,
-        action: "SET_ROLE",
-        details: { role }
-      });
-      
       res.json(updatedUser);
     } catch (error) {
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
+      res.status(400).json({ message: (error as Error).message });
     }
   });
-  
-  app.post("/api/auth/logout", (req, res) => {
-    req.logout((err) => {
-      if (err) {
-        return res.status(500).json({ message: "Logout failed", error: err.message });
-      }
-      res.json({ message: "Logged out successfully" });
-    });
-  });
-  
-  // Staff management routes
-  app.get("/api/staff", isAuthenticated, async (req, res) => {
+
+  // Dashboard data
+  app.get("/api/dashboard/stats", isAuthenticated, async (req, res) => {
     try {
-      const { role, contractType, status } = req.query;
+      const nurses = await storage.listStaffByRole("nurse");
+      const oss = await storage.listStaffByRole("oss");
+      const pendingRequests = await storage.listChangeRequestsByStatus("pending");
       
-      const filter: any = {};
+      // Get count of staff on vacation today
+      const today = new Date();
+      const todayStr = today.toISOString().split("T")[0];
+      const vacations = await storage.listVacationsByDateRange(today, today);
       
-      if (role && Object.values(UserRole).includes(role as UserRole)) {
-        filter.role = role;
-      }
-      
-      if (contractType && Object.values(ContractType).includes(contractType as ContractType)) {
-        filter.contractType = contractType;
-      }
-      
-      if (status && Object.values(StaffStatus).includes(status as StaffStatus)) {
-        filter.status = status;
-      }
-      
-      const staffMembers = await storage.getStaffMembers(filter);
-      res.json(staffMembers);
-    } catch (error) {
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
-    }
-  });
-  
-  app.post("/api/staff", isHeadNurse, async (req, res) => {
-    try {
-      const staffData = insertStaffSchema.parse(req.body);
-      const createdStaff = await storage.createStaff(staffData);
-      
-      // Log activity
-      await storage.createActivityLog({
-        userId: (req.user as any).id,
-        action: "CREATE_STAFF",
-        details: { staffId: createdStaff.id }
+      res.json({
+        nurseCount: nurses.length,
+        ossCount: oss.length,
+        changeRequests: pendingRequests.length,
+        onVacation: vacations.length
       });
-      
-      res.status(201).json(createdStaff);
     } catch (error) {
-      if (error instanceof ZodError) {
-        const validationError = fromZodError(error);
-        return res.status(400).json({ message: validationError.message });
-      }
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
+      res.status(500).json({ message: (error as Error).message });
     }
   });
-  
-  app.put("/api/staff/:id", isHeadNurse, async (req, res) => {
+
+  // Get weekly schedule
+  app.get("/api/schedule/weekly", isAuthenticated, async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
-      const staffData = req.body;
+      const today = new Date();
+      const startDate = new Date(today);
+      startDate.setDate(today.getDate() - today.getDay() + 1); // Monday of current week
       
-      const updatedStaff = await storage.updateStaff(id, staffData);
+      const endDate = new Date(startDate);
+      endDate.setDate(startDate.getDate() + 6); // Sunday of current week
       
-      if (!updatedStaff) {
-        return res.status(404).json({ message: "Staff not found" });
-      }
+      const shifts = await storage.listShiftsByDateRange(startDate, endDate);
       
-      // Log activity
-      await storage.createActivityLog({
-        userId: (req.user as any).id,
-        action: "UPDATE_STAFF",
-        details: { staffId: id }
-      });
+      // Get staff details for each shift
+      const staffIds = [...new Set(shifts.map(shift => shift.staffId))];
+      const staffDetails: Record<number, any> = {};
       
-      res.json(updatedStaff);
-    } catch (error) {
-      if (error instanceof ZodError) {
-        const validationError = fromZodError(error);
-        return res.status(400).json({ message: validationError.message });
-      }
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
-    }
-  });
-  
-  app.delete("/api/staff/:id", isHeadNurse, async (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const deleted = await storage.deleteStaff(id);
-      
-      if (!deleted) {
-        return res.status(404).json({ message: "Staff not found" });
-      }
-      
-      // Log activity
-      await storage.createActivityLog({
-        userId: (req.user as any).id,
-        action: "DELETE_STAFF",
-        details: { staffId: id }
-      });
-      
-      res.json({ message: "Staff deleted successfully" });
-    } catch (error) {
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
-    }
-  });
-  
-  // Staff import from Excel
-  app.post("/api/staff/import-excel", isHeadNurse, async (req, res) => {
-    try {
-      const excelData = req.body.excelData;
-      const buffer = Buffer.from(excelData, 'base64');
-      
-      const workbook = XLSX.read(buffer, { type: 'buffer' });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows: any[] = XLSX.utils.sheet_to_json(sheet);
-      
-      const results = {
-        success: 0,
-        failed: 0,
-        errors: [] as string[]
-      };
-      
-      for (const row of rows) {
-        try {
-          // Check if user with email exists
-          let user = await storage.getUserByEmail(row.email);
-          
-          if (!user) {
-            // Create new user
-            user = await storage.createUser({
-              googleId: `temp_${nanoid()}`,  // Temporary ID until user logs in
-              email: row.email,
-              name: row.name,
-              role: row.role === "OSS" ? UserRole.OSS : UserRole.NURSE,
-              avatar: null
-            });
-          }
-          
-          // Check if staff already exists for this user
-          const existingStaff = await storage.getStaffByUserId(user.id);
-          
-          if (!existingStaff) {
-            // Create staff record
-            const prefix = user.role === UserRole.NURSE ? "NRS" : "OSS";
-            const staffCount = (await storage.getStaffMembers()).length;
-            const staffId = row.staffId || `${prefix}${String(staffCount + 1).padStart(4, '0')}`;
-            
-            await storage.createStaff({
-              userId: user.id,
-              staffId,
-              contractType: row.contractType === "part_time" ? ContractType.PART_TIME : ContractType.FULL_TIME,
-              partTimePercentage: row.partTimePercentage || null,
-              status: StaffStatus.ACTIVE,
-              delegatedBy: null,
-              delegationActive: false
-            });
-          }
-          
-          results.success++;
-        } catch (error) {
-          results.failed++;
-          results.errors.push(`Error processing row ${row.name || row.email}: ${(error as Error).message}`);
-        }
-      }
-      
-      // Log activity
-      await storage.createActivityLog({
-        userId: (req.user as any).id,
-        action: "IMPORT_STAFF",
-        details: { 
-          success: results.success,
-          failed: results.failed
-        }
-      });
-      
-      res.json(results);
-    } catch (error) {
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
-    }
-  });
-  
-  // Delegation routes
-  app.post("/api/delegation/:staffId", isHeadNurse, async (req, res) => {
-    try {
-      const staffId = parseInt(req.params.staffId);
-      const { active } = req.body;
-      
-      if (typeof active !== "boolean") {
-        return res.status(400).json({ message: "Active status must be a boolean" });
-      }
-      
-      const updatedStaff = await storage.setDelegation((req.user as any).id, staffId, active);
-      
-      if (!updatedStaff) {
-        return res.status(404).json({ message: "Staff not found" });
-      }
-      
-      // Log activity
-      await storage.createActivityLog({
-        userId: (req.user as any).id,
-        action: active ? "ENABLE_DELEGATION" : "DISABLE_DELEGATION",
-        details: { staffId }
-      });
-      
-      res.json(updatedStaff);
-    } catch (error) {
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
-    }
-  });
-  
-  app.get("/api/delegation", isHeadNurse, async (req, res) => {
-    try {
-      const delegatedStaff = await storage.getDelegatedStaff((req.user as any).id);
-      res.json(delegatedStaff);
-    } catch (error) {
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
-    }
-  });
-  
-  // Schedule routes
-  app.get("/api/schedules", isAuthenticated, async (req, res) => {
-    try {
-      const { startDate, endDate, staffType } = req.query;
-      
-      if (!startDate || !endDate) {
-        return res.status(400).json({ message: "Start date and end date are required" });
-      }
-      
-      const start = new Date(startDate as string);
-      const end = new Date(endDate as string);
-      
-      let staffTypeFilter: UserRole | undefined = undefined;
-      if (staffType && Object.values(UserRole).includes(staffType as UserRole)) {
-        staffTypeFilter = staffType as UserRole;
-      }
-      
-      const schedules = await storage.getSchedulesByDateRange(start, end, staffTypeFilter);
-      res.json(schedules);
-    } catch (error) {
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
-    }
-  });
-  
-  app.post("/api/schedules/generate", isHeadNurseOrDelegated, async (req, res) => {
-    try {
-      const settingsData = insertScheduleSettingsSchema.parse(req.body);
-      
-      // Create settings in storage
-      const settings = await storage.createScheduleSettings({
-        ...settingsData,
-        createdBy: (req.user as any).id
-      });
-      
-      // Get staff members based on staff type
-      const staffMembers = await storage.getStaffMembers({ role: settings.staffType });
-      
-      // Generate schedules
-      const generatedSchedules = generateSchedule(
-        staffMembers,
-        settings.startDate,
-        settings.endDate,
-        {
-          considerVacations: settings.considerVacations,
-          considerPartTime: settings.considerPartTime,
-          distributeNightShifts: settings.distributeNightShifts,
-          avoidConsecutiveNights: settings.avoidConsecutiveNights
-        }
-      );
-      
-      // Save generated schedules
-      const savedSchedules = [];
-      for (const schedule of generatedSchedules) {
-        const savedSchedule = await storage.createSchedule({
-          staffId: schedule.staffId,
-          date: schedule.date,
-          shiftType: schedule.shiftType,
-          generatedBy: (req.user as any).id
-        });
-        savedSchedules.push(savedSchedule);
-      }
-      
-      // Log activity
-      await storage.createActivityLog({
-        userId: (req.user as any).id,
-        action: "GENERATE_SCHEDULES",
-        details: { 
-          settingsId: settings.id,
-          staffType: settings.staffType,
-          startDate: settings.startDate,
-          endDate: settings.endDate,
-          count: savedSchedules.length
-        }
-      });
-      
-      // Generate PDF if requested
-      if (settings.generatePdf) {
-        const pdfBuffer = await generatePDF(savedSchedules, staffMembers, settings);
-        
-        // In a real app, you'd save this to a file service or send directly via email
-        // For now, we'll just return success
-      }
-      
-      // Send emails if requested
-      if (settings.sendEmail) {
-        // Create a testing transport for development
-        const transporter = nodemailer.createTransport({
-          host: process.env.SMTP_HOST || "smtp.example.com",
-          port: parseInt(process.env.SMTP_PORT || "587"),
-          secure: process.env.SMTP_SECURE === "true",
-          auth: {
-            user: process.env.SMTP_USER || "user@example.com",
-            pass: process.env.SMTP_PASS || "password"
-          }
-        });
-        
-        // Group schedules by staff
-        const schedulesByStaff = savedSchedules.reduce((acc, schedule) => {
-          if (!acc[schedule.staffId]) {
-            acc[schedule.staffId] = [];
-          }
-          acc[schedule.staffId].push(schedule);
-          return acc;
-        }, {} as Record<number, any[]>);
-        
-        // Send email to each staff member
-        for (const staffId in schedulesByStaff) {
-          const staff = staffMembers.find(s => s.id === parseInt(staffId));
-          if (staff) {
-            // In a real app, you would send an actual email here
-            console.log(`Sending email to ${staff.user.email} with their schedules`);
+      for (const staffId of staffIds) {
+        const staff = await storage.getStaffById(staffId);
+        if (staff) {
+          const user = await storage.getUserById(staff.userId);
+          if (user) {
+            staffDetails[staffId] = {
+              id: staffId,
+              name: user.name,
+              role: staff.role
+            };
           }
         }
-      }
-      
-      // Send push notifications if requested
-      if (settings.sendPushNotification) {
-        // Broadcast to all connected clients
-        clients.forEach((client) => {
-          if (client.readyState === 1) {
-            client.send(JSON.stringify({
-              type: "SCHEDULES_GENERATED",
-              data: {
-                startDate: settings.startDate,
-                endDate: settings.endDate,
-                staffType: settings.staffType
-              }
-            }));
-          }
-        });
       }
       
       res.json({
-        settings,
-        schedulesGenerated: savedSchedules.length
+        startDate,
+        endDate,
+        shifts,
+        staffDetails
       });
     } catch (error) {
-      if (error instanceof ZodError) {
-        const validationError = fromZodError(error);
-        return res.status(400).json({ message: validationError.message });
-      }
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
+      res.status(500).json({ message: (error as Error).message });
     }
   });
-  
-  // Shift request routes
-  app.get("/api/shift-requests", isAuthenticated, async (req, res) => {
+
+  // Get shift change requests
+  app.get("/api/change-requests", isAuthenticated, async (req, res) => {
     try {
-      const { status } = req.query;
+      let requests;
+      const user = req.user as any;
       
-      // If status provided and valid, filter by status
-      if (status && Object.values(ShiftRequestStatus).includes(status as ShiftRequestStatus)) {
-        const requests = await storage.getShiftRequestsByStatus(status as ShiftRequestStatus);
-        return res.json(requests);
-      }
-      
-      // If user is head nurse, get all requests
-      if ((req.user as any).role === UserRole.HEAD_NURSE) {
-        // Get all statuses and combine results
-        const allRequests = [];
-        for (const statusValue of Object.values(ShiftRequestStatus)) {
-          const requests = await storage.getShiftRequestsByStatus(statusValue);
-          allRequests.push(...requests);
+      if (user.role === "head_nurse") {
+        // Head nurses can see all pending requests
+        requests = await storage.listChangeRequestsByStatus("pending");
+      } else {
+        // Regular staff can only see their own requests
+        const staff = await storage.getStaffByUserId(user.id);
+        if (!staff) {
+          return res.status(404).json({ message: "Staff record not found" });
         }
-        return res.json(allRequests);
+        requests = await storage.listChangeRequestsByStaffId(staff.id);
       }
       
-      // Otherwise, get only the user's requests
-      const staff = await storage.getStaffByUserId((req.user as any).id);
-      if (!staff) {
-        return res.status(404).json({ message: "Staff record not found for user" });
-      }
+      // Expand the data with staff and shift details
+      const expandedRequests = await Promise.all(requests.map(async (request) => {
+        const staff = await storage.getStaffById(request.staffId);
+        const shift = await storage.getShiftById(request.shiftId);
+        const user = staff ? await storage.getUserById(staff.userId) : null;
+        
+        return {
+          ...request,
+          staffName: user ? user.name : "Unknown",
+          shiftDate: shift ? shift.date : null,
+          shiftType: shift ? shift.shiftType : null
+        };
+      }));
       
-      const requests = await storage.getShiftRequestsByStaffId(staff.id);
-      res.json(requests);
+      res.json(expandedRequests);
     } catch (error) {
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
+      res.status(500).json({ message: (error as Error).message });
     }
   });
-  
-  app.post("/api/shift-requests", isAuthenticated, async (req, res) => {
+
+  // Create shift change request
+  app.post("/api/change-requests", isAuthenticated, async (req, res) => {
     try {
-      const staff = await storage.getStaffByUserId((req.user as any).id);
+      const user = req.user as any;
+      const staff = await storage.getStaffByUserId(user.id);
+      
       if (!staff) {
-        return res.status(404).json({ message: "Staff record not found for user" });
+        return res.status(404).json({ message: "Staff record not found" });
       }
       
-      // Generate a request ID
-      const requestCount = (await storage.getShiftRequestsByStaffId(staff.id)).length;
-      const requestId = `REQ-${String(requestCount + 1).padStart(3, '0')}`;
+      const requestSchema = insertChangeRequestSchema.extend({
+        shiftId: z.number(),
+        reason: z.string().min(1)
+      });
       
-      const requestData = insertShiftRequestSchema.parse({
+      const validatedData = requestSchema.parse({
         ...req.body,
-        requestId,
-        requestedBy: staff.id
+        staffId: staff.id
       });
       
-      const createdRequest = await storage.createShiftRequest(requestData);
-      
-      // Log activity
-      await storage.createActivityLog({
-        userId: (req.user as any).id,
-        action: "CREATE_SHIFT_REQUEST",
-        details: { requestId: createdRequest.id }
-      });
-      
-      // Notify head nurses via WebSocket
-      clients.forEach((client) => {
-        if (client.readyState === 1) {
-          client.send(JSON.stringify({
-            type: "NEW_SHIFT_REQUEST",
-            data: {
-              requestId: createdRequest.requestId,
-              staffName: (req.user as any).name,
-              shiftDate: createdRequest.shiftDate
-            }
-          }));
-        }
-      });
-      
-      res.status(201).json(createdRequest);
-    } catch (error) {
-      if (error instanceof ZodError) {
-        const validationError = fromZodError(error);
-        return res.status(400).json({ message: validationError.message });
+      const shift = await storage.getShiftById(validatedData.shiftId);
+      if (!shift) {
+        return res.status(404).json({ message: "Shift not found" });
       }
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
+      
+      // Create change request
+      const changeRequest = await storage.createChangeRequest(validatedData);
+      
+      // Send notification to head nurses
+      const headNurses = await storage.listUsersByRole("head_nurse");
+      
+      for (const headNurse of headNurses) {
+        // Create notification in database
+        await storage.createNotification({
+          userId: headNurse.id,
+          title: "Richiesta cambio turno",
+          message: `${user.name} ha richiesto un cambio turno per il ${new Date(shift.date).toLocaleDateString('it-IT')}`,
+          type: "change_request"
+        });
+        
+        // Send push notification if connected
+        sendPushNotification(headNurse.id, {
+          type: "change_request",
+          title: "Nuova richiesta cambio turno",
+          message: `${user.name} ha richiesto un cambio turno per il ${new Date(shift.date).toLocaleDateString('it-IT')}`,
+          data: {
+            requestId: changeRequest.id
+          }
+        });
+        
+        // Send email notification
+        await sendShiftChangeRequestEmail(
+          headNurse,
+          user.name,
+          new Date(shift.date),
+          shift.shiftType as ShiftType
+        );
+      }
+      
+      res.status(201).json(changeRequest);
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
     }
   });
-  
-  app.put("/api/shift-requests/:id/status", isHeadNurseOrDelegated, async (req, res) => {
+
+  // Update shift change request status (approve/reject)
+  app.patch("/api/change-requests/:id", isHeadNurseOrDelegate, async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
-      const { status } = req.body;
+      const requestId = parseInt(req.params.id);
+      const user = req.user as any;
       
-      if (!Object.values(ShiftRequestStatus).includes(status)) {
-        return res.status(400).json({ message: "Invalid status" });
+      const statusSchema = z.object({
+        status: z.enum(["approved", "rejected"])
+      });
+      
+      const { status } = statusSchema.parse(req.body);
+      
+      const changeRequest = await storage.getChangeRequestById(requestId);
+      if (!changeRequest) {
+        return res.status(404).json({ message: "Change request not found" });
       }
       
-      const updatedRequest = await storage.updateShiftRequestStatus(
-        id, 
-        status, 
-        (req.user as any).id
-      );
+      // Update the request
+      const updatedRequest = await storage.updateChangeRequest(requestId, {
+        status,
+        reviewedBy: user.id
+      });
       
       if (!updatedRequest) {
-        return res.status(404).json({ message: "Shift request not found" });
+        return res.status(404).json({ message: "Change request not found" });
       }
       
-      // Log activity
-      await storage.createActivityLog({
-        userId: (req.user as any).id,
-        action: "UPDATE_SHIFT_REQUEST_STATUS",
-        details: { 
-          requestId: id,
-          status
-        }
-      });
-      
-      // Notify the requestor via WebSocket
-      const request = await storage.getShiftRequest(id);
-      if (request) {
-        const staff = await storage.getStaff(request.requestedBy);
-        if (staff) {
-          clients.forEach((client) => {
-            if (client.readyState === 1) {
-              client.send(JSON.stringify({
-                type: "SHIFT_REQUEST_STATUS_UPDATED",
-                data: {
-                  requestId: request.requestId,
-                  status,
-                  staffId: staff.userId
-                }
-              }));
-            }
+      // If approved, update the shift
+      if (status === "approved") {
+        const shift = await storage.getShiftById(changeRequest.shiftId);
+        if (shift) {
+          await storage.updateShift(shift.id, {
+            shiftType: changeRequest.requestedShiftType as ShiftType,
+            changed: true,
+            originalShiftType: shift.originalShiftType || shift.shiftType
           });
+        }
+      }
+      
+      // Get staff user to send notification
+      const staff = await storage.getStaffById(changeRequest.staffId);
+      if (staff) {
+        const staffUser = await storage.getUserById(staff.userId);
+        if (staffUser) {
+          // Get shift details for the notification
+          const shift = await storage.getShiftById(changeRequest.shiftId);
+          
+          if (shift) {
+            // Create notification
+            await storage.createNotification({
+              userId: staffUser.id,
+              title: `Richiesta cambio turno ${status === "approved" ? "approvata" : "rifiutata"}`,
+              message: `La tua richiesta di cambio turno per il ${new Date(shift.date).toLocaleDateString('it-IT')} è stata ${status === "approved" ? "approvata" : "rifiutata"}`,
+              type: "change_request_status"
+            });
+            
+            // Send push notification
+            sendPushNotification(staffUser.id, {
+              type: "change_request_status",
+              title: `Richiesta cambio turno ${status === "approved" ? "approvata" : "rifiutata"}`,
+              message: `La tua richiesta di cambio turno per il ${new Date(shift.date).toLocaleDateString('it-IT')} è stata ${status === "approved" ? "approvata" : "rifiutata"}`,
+              data: {
+                requestId: changeRequest.id,
+                status
+              }
+            });
+            
+            // Send email notification
+            await sendChangeRequestStatusEmail(
+              staffUser,
+              status === "approved",
+              new Date(shift.date),
+              shift.shiftType as ShiftType
+            );
+          }
         }
       }
       
       res.json(updatedRequest);
     } catch (error) {
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
+      res.status(400).json({ message: (error as Error).message });
     }
   });
-  
-  // Activity logs
-  app.get("/api/activity-logs", isAuthenticated, async (req, res) => {
+
+  // Staff management
+  app.get("/api/staff", isAuthenticated, async (req, res) => {
     try {
-      const limit = parseInt(req.query.limit as string) || 10;
-      const logs = await storage.getRecentActivityLogs(limit);
-      res.json(logs);
-    } catch (error) {
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
-    }
-  });
-  
-  // Push notification subscription
-  app.post("/api/notifications/subscribe", isAuthenticated, async (req, res) => {
-    try {
-      const { subscription } = req.body;
+      const staffList = await storage.listStaff();
       
-      if (!subscription || !subscription.endpoint) {
-        return res.status(400).json({ message: "Invalid subscription object" });
+      // Expand data with user details
+      const expandedStaffList = await Promise.all(staffList.map(async (staff) => {
+        const user = await storage.getUserById(staff.userId);
+        return {
+          ...staff,
+          name: user ? user.name : "Unknown",
+          email: user ? user.email : "Unknown",
+          imageUrl: user ? user.imageUrl : null
+        };
+      }));
+      
+      res.json(expandedStaffList);
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  });
+
+  // Import staff from Excel
+  app.post("/api/staff/import", isHeadNurse, upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
       }
       
-      const savedSubscription = await storage.saveNotificationSubscription({
-        userId: (req.user as any).id,
-        subscription
-      });
+      // Read Excel file
+      const workbook = XLSX.read(req.file.buffer);
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      const data = XLSX.utils.sheet_to_json(worksheet);
       
-      res.status(201).json(savedSubscription);
+      // Validate the Excel format
+      const requiredFields = ["name", "email", "role", "department", "facility"];
+      
+      // Check if all required fields are present in the first row
+      const firstRow = data[0] as any;
+      const missingFields = requiredFields.filter(field => !(field in firstRow));
+      
+      if (missingFields.length > 0) {
+        return res.status(400).json({ 
+          message: `Missing required fields: ${missingFields.join(", ")}` 
+        });
+      }
+      
+      // Import staff data
+      const importedStaff = [];
+      const errors = [];
+      
+      for (const row of data as any[]) {
+        try {
+          const role = row.role.toLowerCase();
+          if (!["nurse", "oss", "head_nurse"].includes(role)) {
+            throw new Error(`Invalid role: ${role}. Must be nurse, oss, or head_nurse.`);
+          }
+          
+          // Check if user with this email already exists
+          const existingUser = await storage.getUserByEmail(row.email);
+          
+          if (existingUser) {
+            // Update existing user
+            const updatedUser = await storage.updateUser(existingUser.id, {
+              name: row.name,
+              role: role as Role,
+              department: row.department,
+              facility: row.facility,
+              isPartTime: row.isPartTime === "true" || row.isPartTime === true,
+              partTimeHours: row.partTimeHours ? parseInt(row.partTimeHours) : undefined
+            });
+            
+            // Check if staff record exists
+            const existingStaff = await storage.getStaffByUserId(existingUser.id);
+            
+            if (existingStaff) {
+              // Update staff record
+              await storage.updateStaff(existingStaff.id, {
+                role: role as Role,
+                department: row.department,
+                facility: row.facility,
+                isPartTime: row.isPartTime === "true" || row.isPartTime === true,
+                partTimeHours: row.partTimeHours ? parseInt(row.partTimeHours) : undefined
+              });
+              
+              importedStaff.push({
+                ...existingStaff,
+                name: updatedUser?.name,
+                email: updatedUser?.email,
+                status: "updated"
+              });
+            } else {
+              // Create new staff record
+              const newStaff = await storage.createStaff({
+                userId: existingUser.id,
+                role: role as Role,
+                department: row.department,
+                facility: row.facility,
+                isPartTime: row.isPartTime === "true" || row.isPartTime === true,
+                partTimeHours: row.partTimeHours ? parseInt(row.partTimeHours) : undefined
+              });
+              
+              importedStaff.push({
+                ...newStaff,
+                name: updatedUser?.name,
+                email: updatedUser?.email,
+                status: "created"
+              });
+            }
+          } else {
+            // Create dummy Google ID for imported users
+            // In a real app, these users would need to login with Google
+            const dummyGoogleId = `imported_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            
+            // Create new user
+            const newUser = await storage.createUser({
+              googleId: dummyGoogleId,
+              email: row.email,
+              name: row.name,
+              role: role as Role,
+              department: row.department,
+              facility: row.facility,
+              isPartTime: row.isPartTime === "true" || row.isPartTime === true,
+              partTimeHours: row.partTimeHours ? parseInt(row.partTimeHours) : undefined
+            });
+            
+            // Create staff record
+            const newStaff = await storage.createStaff({
+              userId: newUser.id,
+              role: role as Role,
+              department: row.department,
+              facility: row.facility,
+              isPartTime: row.isPartTime === "true" || row.isPartTime === true,
+              partTimeHours: row.partTimeHours ? parseInt(row.partTimeHours) : undefined
+            });
+            
+            importedStaff.push({
+              ...newStaff,
+              name: newUser.name,
+              email: newUser.email,
+              status: "created"
+            });
+          }
+        } catch (error) {
+          errors.push({
+            row: row,
+            error: (error as Error).message
+          });
+        }
+      }
+      
+      res.json({
+        success: true,
+        imported: importedStaff.length,
+        errors: errors.length,
+        data: {
+          staff: importedStaff,
+          errors
+        }
+      });
     } catch (error) {
-      res.status(500).json({ message: "Server error", error: (error as Error).message });
+      res.status(500).json({ message: (error as Error).message });
     }
   });
-  
+
+  // Create staff manually
+  app.post("/api/staff", isHeadNurse, async (req, res) => {
+    try {
+      const userSchema = insertUserSchema.extend({
+        isPartTime: z.boolean().optional(),
+        partTimeHours: z.number().optional(),
+      });
+      
+      const validatedData = userSchema.parse(req.body);
+      
+      // Create dummy Google ID for manually created users
+      // In a real app, these users would need to login with Google
+      const dummyGoogleId = `manual_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      
+      // Create new user
+      const newUser = await storage.createUser({
+        ...validatedData,
+        googleId: dummyGoogleId
+      });
+      
+      // Create staff record
+      const newStaff = await storage.createStaff({
+        userId: newUser.id,
+        role: validatedData.role,
+        department: validatedData.department,
+        facility: validatedData.facility,
+        isPartTime: validatedData.isPartTime || false,
+        partTimeHours: validatedData.partTimeHours
+      });
+      
+      res.status(201).json({
+        ...newStaff,
+        name: newUser.name,
+        email: newUser.email
+      });
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  });
+
+  // Update staff
+  app.patch("/api/staff/:id", isHeadNurse, async (req, res) => {
+    try {
+      const staffId = parseInt(req.params.id);
+      
+      const updateSchema = z.object({
+        name: z.string().optional(),
+        email: z.string().email().optional(),
+        role: z.enum(["nurse", "oss", "head_nurse"]).optional(),
+        department: z.string().optional(),
+        facility: z.string().optional(),
+        isPartTime: z.boolean().optional(),
+        partTimeHours: z.number().optional(),
+      });
+      
+      const validatedData = updateSchema.parse(req.body);
+      
+      // Get staff record
+      const staff = await storage.getStaffById(staffId);
+      if (!staff) {
+        return res.status(404).json({ message: "Staff not found" });
+      }
+      
+      // Update staff record
+      const staffUpdateData: any = {};
+      if (validatedData.role) staffUpdateData.role = validatedData.role;
+      if (validatedData.department) staffUpdateData.department = validatedData.department;
+      if (validatedData.facility) staffUpdateData.facility = validatedData.facility;
+      if (validatedData.isPartTime !== undefined) staffUpdateData.isPartTime = validatedData.isPartTime;
+      if (validatedData.partTimeHours !== undefined) staffUpdateData.partTimeHours = validatedData.partTimeHours;
+      
+      if (Object.keys(staffUpdateData).length > 0) {
+        await storage.updateStaff(staffId, staffUpdateData);
+      }
+      
+      // Update user record
+      const userUpdateData: any = {};
+      if (validatedData.name) userUpdateData.name = validatedData.name;
+      if (validatedData.email) userUpdateData.email = validatedData.email;
+      if (validatedData.role) userUpdateData.role = validatedData.role;
+      if (validatedData.department) userUpdateData.department = validatedData.department;
+      if (validatedData.facility) userUpdateData.facility = validatedData.facility;
+      if (validatedData.isPartTime !== undefined) userUpdateData.isPartTime = validatedData.isPartTime;
+      if (validatedData.partTimeHours !== undefined) userUpdateData.partTimeHours = validatedData.partTimeHours;
+      
+      if (Object.keys(userUpdateData).length > 0) {
+        await storage.updateUser(staff.userId, userUpdateData);
+      }
+      
+      // Get updated staff record
+      const updatedStaff = await storage.getStaffById(staffId);
+      const user = await storage.getUserById(staff.userId);
+      
+      res.json({
+        ...updatedStaff,
+        name: user?.name,
+        email: user?.email
+      });
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  });
+
+  // Get vacations
+  app.get("/api/vacations", isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      let vacations;
+      
+      if (user.role === "head_nurse") {
+        // Head nurses can see all vacations
+        vacations = await storage.listVacationsByDateRange(
+          new Date(new Date().getFullYear(), 0, 1), // January 1st of current year
+          new Date(new Date().getFullYear(), 11, 31) // December 31st of current year
+        );
+      } else {
+        // Regular staff can only see their own vacations
+        const staff = await storage.getStaffByUserId(user.id);
+        if (!staff) {
+          return res.status(404).json({ message: "Staff record not found" });
+        }
+        vacations = await storage.listVacationsByStaffId(staff.id);
+      }
+      
+      // Expand the data with staff details
+      const expandedVacations = await Promise.all(vacations.map(async (vacation) => {
+        const staff = await storage.getStaffById(vacation.staffId);
+        const user = staff ? await storage.getUserById(staff.userId) : null;
+        
+        return {
+          ...vacation,
+          staffName: user ? user.name : "Unknown",
+          role: staff ? staff.role : null
+        };
+      }));
+      
+      res.json(expandedVacations);
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  });
+
+  // Create vacation request
+  app.post("/api/vacations", isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const staff = await storage.getStaffByUserId(user.id);
+      
+      if (!staff) {
+        return res.status(404).json({ message: "Staff record not found" });
+      }
+      
+      const vacationSchema = insertVacationSchema.extend({
+        startDate: z.coerce.date(),
+        endDate: z.coerce.date(),
+      }).refine(data => data.startDate <= data.endDate, {
+        message: "End date must be after start date",
+        path: ["endDate"]
+      });
+      
+      const validatedData = vacationSchema.parse({
+        ...req.body,
+        staffId: staff.id
+      });
+      
+      // Create vacation request
+      const vacation = await storage.createVacation(validatedData);
+      
+      // Send notification to head nurses if it's not a head nurse creating the request
+      if (user.role !== "head_nurse") {
+        const headNurses = await storage.listUsersByRole("head_nurse");
+        
+        const startDate = new Date(vacation.startDate).toLocaleDateString('it-IT');
+        const endDate = new Date(vacation.endDate).toLocaleDateString('it-IT');
+        
+        for (const headNurse of headNurses) {
+          // Create notification
+          await storage.createNotification({
+            userId: headNurse.id,
+            title: "Richiesta ferie",
+            message: `${user.name} ha richiesto ferie dal ${startDate} al ${endDate}`,
+            type: "vacation_request"
+          });
+          
+          // Send push notification
+          sendPushNotification(headNurse.id, {
+            type: "vacation_request",
+            title: "Nuova richiesta ferie",
+            message: `${user.name} ha richiesto ferie dal ${startDate} al ${endDate}`,
+            data: {
+              vacationId: vacation.id
+            }
+          });
+        }
+      }
+      
+      res.status(201).json(vacation);
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  });
+
+  // Update vacation request status (approve/reject)
+  app.patch("/api/vacations/:id", isHeadNurseOrDelegate, async (req, res) => {
+    try {
+      const vacationId = parseInt(req.params.id);
+      
+      const statusSchema = z.object({
+        approved: z.boolean()
+      });
+      
+      const { approved } = statusSchema.parse(req.body);
+      
+      const vacation = await storage.getVacationById(vacationId);
+      if (!vacation) {
+        return res.status(404).json({ message: "Vacation request not found" });
+      }
+      
+      // Update the vacation
+      const updatedVacation = await storage.updateVacation(vacationId, {
+        approved
+      });
+      
+      if (!updatedVacation) {
+        return res.status(404).json({ message: "Vacation request not found" });
+      }
+      
+      // Get staff user to send notification
+      const staff = await storage.getStaffById(vacation.staffId);
+      if (staff) {
+        const staffUser = await storage.getUserById(staff.userId);
+        if (staffUser) {
+          const startDate = new Date(vacation.startDate).toLocaleDateString('it-IT');
+          const endDate = new Date(vacation.endDate).toLocaleDateString('it-IT');
+          
+          // Create notification
+          await storage.createNotification({
+            userId: staffUser.id,
+            title: `Richiesta ferie ${approved ? "approvata" : "rifiutata"}`,
+            message: `La tua richiesta di ferie dal ${startDate} al ${endDate} è stata ${approved ? "approvata" : "rifiutata"}`,
+            type: "vacation_status"
+          });
+          
+          // Send push notification
+          sendPushNotification(staffUser.id, {
+            type: "vacation_status",
+            title: `Richiesta ferie ${approved ? "approvata" : "rifiutata"}`,
+            message: `La tua richiesta di ferie dal ${startDate} al ${endDate} è stata ${approved ? "approvata" : "rifiutata"}`,
+            data: {
+              vacationId: vacation.id,
+              approved
+            }
+          });
+        }
+      }
+      
+      res.json(updatedVacation);
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  });
+
+  // Generate schedule
+  app.post("/api/schedule/generate", isHeadNurseOrDelegate, async (req, res) => {
+    try {
+      const user = req.user as any;
+      
+      const scheduleSchema = z.object({
+        staffType: z.enum(["nurse", "oss"]),
+        startDate: z.coerce.date(),
+        endDate: z.coerce.date(),
+        considerVacations: z.boolean().default(true),
+        considerPartTime: z.boolean().default(true),
+        balanceShifts: z.boolean().default(true),
+        sendEmail: z.boolean().default(true),
+        exportPdf: z.boolean().default(true)
+      }).refine(data => data.startDate <= data.endDate, {
+        message: "End date must be after start date",
+        path: ["endDate"]
+      });
+      
+      const validatedData = scheduleSchema.parse(req.body);
+      
+      // Generate the schedule
+      const shifts = await generateSchedule(
+        validatedData.startDate,
+        validatedData.endDate,
+        validatedData.staffType,
+        validatedData.considerVacations,
+        validatedData.considerPartTime,
+        validatedData.balanceShifts
+      );
+      
+      // Record the schedule generation
+      const scheduleGeneration = await storage.createScheduleGeneration({
+        generatedBy: user.id,
+        startDate: validatedData.startDate,
+        endDate: validatedData.endDate,
+        staffType: validatedData.staffType,
+        parameters: {
+          considerVacations: validatedData.considerVacations,
+          considerPartTime: validatedData.considerPartTime,
+          balanceShifts: validatedData.balanceShifts
+        }
+      });
+      
+      // If sendEmail is true, send email to all staff of the specified type
+      if (validatedData.sendEmail) {
+        const staffList = await storage.listStaffByRole(validatedData.staffType);
+        
+        for (const staff of staffList) {
+          const user = await storage.getUserById(staff.userId);
+          if (user) {
+            const staffShifts = shifts.filter(shift => shift.staffId === staff.id);
+            if (staffShifts.length > 0) {
+              await sendScheduleEmail(
+                user,
+                validatedData.startDate,
+                validatedData.endDate,
+                staffShifts,
+                user.name,
+                validatedData.staffType
+              );
+            }
+          }
+        }
+      }
+      
+      // Send notification to all staff of the specified type
+      const staffList = await storage.listStaffByRole(validatedData.staffType);
+      
+      const startDate = validatedData.startDate.toLocaleDateString('it-IT');
+      const endDate = validatedData.endDate.toLocaleDateString('it-IT');
+      
+      for (const staff of staffList) {
+        const staffUser = await storage.getUserById(staff.userId);
+        if (staffUser) {
+          // Create notification
+          await storage.createNotification({
+            userId: staffUser.id,
+            title: "Nuovi turni generati",
+            message: `Sono stati generati i turni dal ${startDate} al ${endDate}`,
+            type: "schedule_generated"
+          });
+          
+          // Send push notification
+          sendPushNotification(staffUser.id, {
+            type: "schedule_generated",
+            title: "Nuovi turni generati",
+            message: `Sono stati generati i turni dal ${startDate} al ${endDate}`,
+            data: {
+              scheduleGenerationId: scheduleGeneration.id
+            }
+          });
+        }
+      }
+      
+      res.status(201).json({
+        success: true,
+        scheduleGeneration,
+        shiftsGenerated: shifts.length
+      });
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  });
+
+  // Get schedule for a specific date range
+  app.get("/api/schedule", isAuthenticated, async (req, res) => {
+    try {
+      const startDate = req.query.startDate 
+        ? new Date(req.query.startDate as string) 
+        : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+        
+      const endDate = req.query.endDate 
+        ? new Date(req.query.endDate as string) 
+        : new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
+      
+      const shifts = await storage.listShiftsByDateRange(startDate, endDate);
+      
+      // Get staff details for each shift
+      const staffIds = [...new Set(shifts.map(shift => shift.staffId))];
+      const staffDetails: Record<number, any> = {};
+      
+      for (const staffId of staffIds) {
+        const staff = await storage.getStaffById(staffId);
+        if (staff) {
+          const user = await storage.getUserById(staff.userId);
+          if (user) {
+            staffDetails[staffId] = {
+              id: staffId,
+              name: user.name,
+              role: staff.role
+            };
+          }
+        }
+      }
+      
+      res.json({
+        startDate,
+        endDate,
+        shifts,
+        staffDetails
+      });
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  });
+
+  // Download schedule as PDF
+  app.get("/api/schedule/pdf", isAuthenticated, async (req, res) => {
+    try {
+      const startDate = req.query.startDate 
+        ? new Date(req.query.startDate as string) 
+        : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+        
+      const endDate = req.query.endDate 
+        ? new Date(req.query.endDate as string) 
+        : new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
+      
+      const staffType = req.query.staffType as Role || "nurse";
+      
+      // Get shifts for the date range
+      const shifts = await storage.listShiftsByDateRange(startDate, endDate);
+      
+      // Filter shifts by staff type
+      const staffList = await storage.listStaffByRole(staffType);
+      const staffIds = staffList.map(staff => staff.id);
+      const filteredShifts = shifts.filter(shift => staffIds.includes(shift.staffId));
+      
+      // Generate PDF
+      const title = staffType === "nurse" ? "Infermieri" : "OSS";
+      const pdfBuffer = await createPdf(filteredShifts, startDate, endDate, title, staffType);
+      
+      // Set response headers
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition", 
+        `attachment; filename=turni_${startDate.toISOString().split("T")[0]}_${endDate.toISOString().split("T")[0]}.pdf`
+      );
+      
+      // Send the PDF
+      res.send(pdfBuffer);
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  });
+
+  // Get notifications
+  app.get("/api/notifications", isAuthenticated, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const notifications = await storage.listNotificationsByUserId(user.id);
+      
+      res.json(notifications);
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  });
+
+  // Mark notification as read
+  app.patch("/api/notifications/:id", isAuthenticated, async (req, res) => {
+    try {
+      const notificationId = parseInt(req.params.id);
+      const user = req.user as any;
+      
+      const notification = await storage.getNotificationById(notificationId);
+      if (!notification) {
+        return res.status(404).json({ message: "Notification not found" });
+      }
+      
+      // Check if the notification belongs to the user
+      if (notification.userId !== user.id) {
+        return res.status(403).json({ message: "Not authorized" });
+      }
+      
+      // Mark as read
+      const updatedNotification = await storage.updateNotification(notificationId, {
+        read: true
+      });
+      
+      res.json(updatedNotification);
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  });
+
+  // Get delegation settings
+  app.get("/api/delegations", isHeadNurse, async (req, res) => {
+    try {
+      const user = req.user as any;
+      const delegations = await storage.listDelegationsByHeadNurse(user.id);
+      
+      // Expand the data with user details
+      const expandedDelegations = await Promise.all(delegations.map(async (delegation) => {
+        const delegatedTo = await storage.getUserById(delegation.delegatedToId);
+        
+        return {
+          ...delegation,
+          delegatedToName: delegatedTo ? delegatedTo.name : "Unknown",
+          delegatedToEmail: delegatedTo ? delegatedTo.email : "Unknown"
+        };
+      }));
+      
+      res.json(expandedDelegations);
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  });
+
+  // Create delegation
+  app.post("/api/delegations", isHeadNurse, async (req, res) => {
+    try {
+      const user = req.user as any;
+      
+      const delegationSchema = z.object({
+        delegatedToId: z.number(),
+        startDate: z.coerce.date(),
+        endDate: z.coerce.date().optional(),
+      }).refine(data => !data.endDate || data.startDate <= data.endDate, {
+        message: "End date must be after start date",
+        path: ["endDate"]
+      });
+      
+      const validatedData = delegationSchema.parse({
+        ...req.body,
+        headNurseId: user.id
+      });
+      
+      // Create delegation
+      const delegation = await storage.createDelegation({
+        headNurseId: user.id,
+        delegatedToId: validatedData.delegatedToId,
+        startDate: validatedData.startDate,
+        endDate: validatedData.endDate,
+        active: true
+      });
+      
+      // Notify the delegated user
+      const delegatedTo = await storage.getUserById(validatedData.delegatedToId);
+      if (delegatedTo) {
+        // Create notification
+        await storage.createNotification({
+          userId: delegatedTo.id,
+          title: "Nuova delega",
+          message: `${user.name} ti ha delegato i permessi di gestione turni`,
+          type: "delegation"
+        });
+        
+        // Send push notification
+        sendPushNotification(delegatedTo.id, {
+          type: "delegation",
+          title: "Nuova delega",
+          message: `${user.name} ti ha delegato i permessi di gestione turni`,
+          data: {
+            delegationId: delegation.id
+          }
+        });
+      }
+      
+      // Expand the delegation with user details
+      const delegatedToUser = await storage.getUserById(delegation.delegatedToId);
+      
+      res.status(201).json({
+        ...delegation,
+        delegatedToName: delegatedToUser ? delegatedToUser.name : "Unknown",
+        delegatedToEmail: delegatedToUser ? delegatedToUser.email : "Unknown"
+      });
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  });
+
+  // Update delegation (activate/deactivate)
+  app.patch("/api/delegations/:id", isHeadNurse, async (req, res) => {
+    try {
+      const delegationId = parseInt(req.params.id);
+      const user = req.user as any;
+      
+      const updateSchema = z.object({
+        active: z.boolean(),
+        endDate: z.coerce.date().optional()
+      });
+      
+      const validatedData = updateSchema.parse(req.body);
+      
+      const delegation = await storage.getDelegationById(delegationId);
+      if (!delegation) {
+        return res.status(404).json({ message: "Delegation not found" });
+      }
+      
+      // Check if the delegation belongs to the user
+      if (delegation.headNurseId !== user.id) {
+        return res.status(403).json({ message: "Not authorized" });
+      }
+      
+      // Update the delegation
+      const updatedDelegation = await storage.updateDelegation(delegationId, validatedData);
+      
+      if (!updatedDelegation) {
+        return res.status(404).json({ message: "Delegation not found" });
+      }
+      
+      // Notify the delegated user if the delegation is deactivated
+      if (delegation.active && !validatedData.active) {
+        const delegatedTo = await storage.getUserById(delegation.delegatedToId);
+        if (delegatedTo) {
+          // Create notification
+          await storage.createNotification({
+            userId: delegatedTo.id,
+            title: "Delega disattivata",
+            message: `${user.name} ha disattivato la tua delega di gestione turni`,
+            type: "delegation_deactivated"
+          });
+          
+          // Send push notification
+          sendPushNotification(delegatedTo.id, {
+            type: "delegation_deactivated",
+            title: "Delega disattivata",
+            message: `${user.name} ha disattivato la tua delega di gestione turni`,
+            data: {
+              delegationId: delegation.id
+            }
+          });
+        }
+      }
+      
+      // Expand the delegation with user details
+      const delegatedToUser = await storage.getUserById(updatedDelegation.delegatedToId);
+      
+      res.json({
+        ...updatedDelegation,
+        delegatedToName: delegatedToUser ? delegatedToUser.name : "Unknown",
+        delegatedToEmail: delegatedToUser ? delegatedToUser.email : "Unknown"
+      });
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  });
+
+  // PWA manifest
+  app.get("/manifest.json", (req, res) => {
+    res.json({
+      name: "NurseScheduler",
+      short_name: "NurseScheduler",
+      description: "Sistema di gestione turni per infermieri e OSS",
+      start_url: "/",
+      display: "standalone",
+      background_color: "#ffffff",
+      theme_color: "#2196F3",
+      icons: [
+        {
+          "src": "/icons/icon-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        },
+        {
+          "src": "/icons/icon-512x512.png",
+          "sizes": "512x512",
+          "type": "image/png"
+        }
+      ]
+    });
+  });
+
+  // Service worker
+  app.get("/service-worker.js", (req, res) => {
+    res.sendFile("service-worker.js", { root: "./dist/public" });
+  });
+
   return httpServer;
 }

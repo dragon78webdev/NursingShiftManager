@@ -1,81 +1,106 @@
-export function registerServiceWorker() {
+// Function to register service worker for PWA functionality
+export async function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('/service-worker.js')
-        .then(registration => {
-          console.log('Service worker registered:', registration);
-          
-          // Ask for notification permission
-          requestNotificationPermission();
-        })
-        .catch(error => {
-          console.error('Service worker registration failed:', error);
-        });
-    });
+    try {
+      const registration = await navigator.serviceWorker.register('/service-worker.js');
+      console.log('Service worker registered:', registration);
+      return registration;
+    } catch (error) {
+      console.error('Service worker registration failed:', error);
+      return null;
+    }
+  }
+  return null;
+}
+
+// Function to request notification permission
+export async function requestNotificationPermission(): Promise<boolean> {
+  if (!('Notification' in window)) {
+    console.log('This browser does not support notifications');
+    return false;
+  }
+  
+  // Check if we already have permission
+  if (Notification.permission === 'granted') {
+    return true;
+  }
+  
+  // Request permission
+  try {
+    const permission = await Notification.requestPermission();
+    return permission === 'granted';
+  } catch (error) {
+    console.error('Error requesting notification permission:', error);
+    return false;
   }
 }
 
-export async function requestNotificationPermission() {
+// Function to setup WebSocket connection for push notifications
+export function setupNotificationWebSocket(userId: number, onMessage: (data: any) => void) {
+  // Check if WebSocket is supported
+  if (!('WebSocket' in window)) {
+    console.error('WebSocket is not supported by this browser');
+    return null;
+  }
+  
+  // Create WebSocket connection
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}?userId=${userId}`;
+  
+  const socket = new WebSocket(wsUrl);
+  
+  socket.onopen = () => {
+    console.log('WebSocket connection established');
+  };
+  
+  socket.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      onMessage(data);
+    } catch (error) {
+      console.error('Error parsing WebSocket message:', error);
+    }
+  };
+  
+  socket.onerror = (error) => {
+    console.error('WebSocket error:', error);
+  };
+  
+  socket.onclose = () => {
+    console.log('WebSocket connection closed');
+    // Attempt to reconnect after a delay
+    setTimeout(() => {
+      setupNotificationWebSocket(userId, onMessage);
+    }, 5000);
+  };
+  
+  return socket;
+}
+
+// Function to show a local notification
+export function showNotification(title: string, options: NotificationOptions = {}) {
   if (!('Notification' in window)) {
     console.log('This browser does not support notifications');
     return;
   }
   
-  if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
-    try {
-      const permission = await Notification.requestPermission();
-      if (permission === 'granted') {
-        console.log('Notification permission granted');
-        subscribeToNotifications();
-      }
-    } catch (error) {
-      console.error('Error requesting notification permission:', error);
-    }
-  } else if (Notification.permission === 'granted') {
-    subscribeToNotifications();
+  if (Notification.permission === 'granted') {
+    // Create notification
+    const notification = new Notification(title, {
+      icon: '/icons/icon-192x192.png',
+      ...options
+    });
+    
+    // Handle notification click
+    notification.onclick = () => {
+      window.focus();
+      notification.close();
+    };
   }
 }
 
-async function subscribeToNotifications() {
-  if ('serviceWorker' in navigator && 'PushManager' in window) {
-    try {
-      const registration = await navigator.serviceWorker.ready;
-      
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(process.env.VAPID_PUBLIC_KEY || 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U')
-      });
-      
-      // Send subscription to backend
-      await fetch('/api/notifications/subscribe', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ subscription }),
-        credentials: 'include'
-      });
-      
-      console.log('Notification subscription successful');
-    } catch (error) {
-      console.error('Error subscribing to push notifications:', error);
-    }
-  }
-}
-
-// Helper function to convert base64 string to Uint8Array
-function urlBase64ToUint8Array(base64String: string) {
-  const padding = '='.repeat((4 - base64String.length % 4) % 4);
-  const base64 = (base64String + padding)
-    .replace(/-/g, '+')
-    .replace(/_/g, '/');
-  
-  const rawData = window.atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-  
-  for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i);
-  }
-  
-  return outputArray;
+// Function to check if the app can be installed (PWA)
+export function canInstallPWA(): boolean {
+  return !!window.matchMedia('(display-mode: browser)').matches && 
+         'BeforeInstallPromptEvent' in window;
 }
