@@ -461,6 +461,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Preview staff Excel import
+  app.post("/api/staff/preview", isHeadNurse, upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+      
+      // Read Excel file
+      const workbook = XLSX.read(req.file.buffer);
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      const data = XLSX.utils.sheet_to_json(worksheet);
+      
+      // Validate the Excel format
+      const requiredFields = ["name", "email", "role", "department", "facility"];
+      
+      // Check if the file is not empty
+      if (data.length === 0) {
+        return res.status(400).json({ message: "Il file Excel è vuoto" });
+      }
+      
+      // Check if all required fields are present in the first row
+      const firstRow = data[0] as any;
+      const missingFields = requiredFields.filter(field => !(field in firstRow));
+      
+      if (missingFields.length > 0) {
+        return res.status(400).json({ 
+          message: `Campi obbligatori mancanti: ${missingFields.join(", ")}` 
+        });
+      }
+      
+      // Return preview data (max 5 records)
+      return res.json({
+        total: data.length,
+        preview: data.slice(0, 5)
+      });
+    } catch (error) {
+      console.error("Error previewing Excel:", error);
+      return res.status(500).json({ message: "Errore nell'analisi del file Excel" });
+    }
+  });
+
   // Import staff from Excel
   app.post("/api/staff/import", isHeadNurse, upload.single("file"), async (req, res) => {
     try {
