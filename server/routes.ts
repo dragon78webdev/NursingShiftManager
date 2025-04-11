@@ -15,6 +15,7 @@ import {
   Role,
   ShiftType
 } from "@shared/schema";
+import { calculateAndStoreShiftComplexity, getShiftComplexityScore, analyzeScheduleComplexity } from "./complexity-scorer";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import MemoryStore from "memorystore";

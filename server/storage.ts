@@ -124,6 +124,8 @@ export class MemStorage implements IStorage {
     this.delegations = new Map();
     this.notifications = new Map();
     this.scheduleGenerations = new Map();
+    this.shiftComplexityScores = new Map();
+    this.complexityFactors = new Map();
     
     // Add some initial demo data
     this.initializeDemoData();
@@ -415,6 +417,416 @@ export class MemStorage implements IStorage {
     return Array.from(this.scheduleGenerations.values())
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
+
+  // Shift complexity score methods
+  async getShiftComplexityScoreById(id: number): Promise<ShiftComplexityScore | undefined> {
+    return this.shiftComplexityScores.get(id);
+  }
+
+  async getShiftComplexityScoreByShiftId(shiftId: number): Promise<ShiftComplexityScore | undefined> {
+    return Array.from(this.shiftComplexityScores.values()).find(score => score.shiftId === shiftId);
+  }
+
+  async createShiftComplexityScore(scoreData: InsertShiftComplexityScore): Promise<ShiftComplexityScore> {
+    const id = this.nextShiftComplexityScoreId++;
+    const createdAt = new Date();
+    const updatedAt = new Date();
+    const score: ShiftComplexityScore = { 
+      ...scoreData, 
+      id, 
+      createdAt, 
+      updatedAt
+    };
+    this.shiftComplexityScores.set(id, score);
+    return score;
+  }
+
+  async updateShiftComplexityScore(id: number, data: Partial<ShiftComplexityScore>): Promise<ShiftComplexityScore | undefined> {
+    const score = this.shiftComplexityScores.get(id);
+    if (!score) return undefined;
+    
+    const updatedAt = new Date();
+    const updatedScore = { ...score, ...data, updatedAt };
+    this.shiftComplexityScores.set(id, updatedScore);
+    return updatedScore;
+  }
+
+  async listShiftComplexityScores(): Promise<ShiftComplexityScore[]> {
+    return Array.from(this.shiftComplexityScores.values());
+  }
+
+  async listShiftComplexityScoresByDateRange(startDate: Date, endDate: Date): Promise<ShiftComplexityScore[]> {
+    // We need to join with shifts to filter by date
+    const shiftsInRange = await this.listShiftsByDateRange(startDate, endDate);
+    const shiftIds = shiftsInRange.map(shift => shift.id);
+    
+    return Array.from(this.shiftComplexityScores.values())
+      .filter(score => shiftIds.includes(score.shiftId));
+  }
+
+  // Complexity factors methods
+  async getComplexityFactorById(id: number): Promise<ComplexityFactor | undefined> {
+    return this.complexityFactors.get(id);
+  }
+
+  async createComplexityFactor(factorData: InsertComplexityFactor): Promise<ComplexityFactor> {
+    const id = this.nextComplexityFactorId++;
+    const createdAt = new Date();
+    const factor: ComplexityFactor = { ...factorData, id, createdAt };
+    this.complexityFactors.set(id, factor);
+    return factor;
+  }
+
+  async listComplexityFactorsByScoreId(scoreId: number): Promise<ComplexityFactor[]> {
+    return Array.from(this.complexityFactors.values())
+      .filter(factor => factor.scoreId === scoreId);
+  }
+
+  async listComplexityFactorsByType(factorType: ComplexityFactorType): Promise<ComplexityFactor[]> {
+    return Array.from(this.complexityFactors.values())
+      .filter(factor => factor.factorType === factorType);
+  }
 }
 
-export const storage = new MemStorage();
+// Database storage implementation using Drizzle ORM
+export class DatabaseStorage implements IStorage {
+  // User methods
+  async getUserById(id: number): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    return user;
+  }
+
+  async getUserByGoogleId(googleId: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.googleId, googleId));
+    return user;
+  }
+
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.email, email));
+    return user;
+  }
+
+  async createUser(userData: InsertUser): Promise<User> {
+    const [user] = await db.insert(users).values(userData).returning();
+    return user;
+  }
+
+  async updateUser(id: number, data: Partial<User>): Promise<User | undefined> {
+    const [user] = await db.update(users)
+      .set(data)
+      .where(eq(users.id, id))
+      .returning();
+    return user;
+  }
+
+  async listUsers(): Promise<User[]> {
+    return db.select().from(users);
+  }
+
+  async listUsersByRole(role: Role): Promise<User[]> {
+    return db.select().from(users).where(eq(users.role, role));
+  }
+
+  // Staff methods
+  async getStaffById(id: number): Promise<Staff | undefined> {
+    const [staffMember] = await db.select().from(staff).where(eq(staff.id, id));
+    return staffMember;
+  }
+
+  async getStaffByUserId(userId: number): Promise<Staff | undefined> {
+    const [staffMember] = await db.select().from(staff).where(eq(staff.userId, userId));
+    return staffMember;
+  }
+
+  async createStaff(staffData: InsertStaff): Promise<Staff> {
+    const [staffMember] = await db.insert(staff).values(staffData).returning();
+    return staffMember;
+  }
+
+  async updateStaff(id: number, data: Partial<Staff>): Promise<Staff | undefined> {
+    const [staffMember] = await db.update(staff)
+      .set(data)
+      .where(eq(staff.id, id))
+      .returning();
+    return staffMember;
+  }
+
+  async listStaff(): Promise<Staff[]> {
+    return db.select().from(staff);
+  }
+
+  async listStaffByRole(role: Role): Promise<Staff[]> {
+    return db.select().from(staff).where(eq(staff.role, role));
+  }
+
+  async listStaffByDepartment(department: string): Promise<Staff[]> {
+    return db.select().from(staff).where(eq(staff.department, department));
+  }
+
+  // Shift methods
+  async getShiftById(id: number): Promise<Shift | undefined> {
+    const [shift] = await db.select().from(shifts).where(eq(shifts.id, id));
+    return shift;
+  }
+
+  async createShift(shiftData: InsertShift): Promise<Shift> {
+    const [shift] = await db.insert(shifts).values(shiftData).returning();
+    return shift;
+  }
+
+  async updateShift(id: number, data: Partial<Shift>): Promise<Shift | undefined> {
+    const [shift] = await db.update(shifts)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(shifts.id, id))
+      .returning();
+    return shift;
+  }
+
+  async listShiftsByStaffId(staffId: number): Promise<Shift[]> {
+    return db.select().from(shifts).where(eq(shifts.staffId, staffId));
+  }
+
+  async listShiftsByDateRange(startDate: Date, endDate: Date): Promise<Shift[]> {
+    return db.select().from(shifts)
+      .where(and(
+        gte(shifts.date, startDate.toISOString().split('T')[0]),
+        lte(shifts.date, endDate.toISOString().split('T')[0])
+      ));
+  }
+
+  async listShiftsByStaffAndDateRange(staffId: number, startDate: Date, endDate: Date): Promise<Shift[]> {
+    return db.select().from(shifts)
+      .where(and(
+        eq(shifts.staffId, staffId),
+        gte(shifts.date, startDate.toISOString().split('T')[0]),
+        lte(shifts.date, endDate.toISOString().split('T')[0])
+      ));
+  }
+
+  // Vacation methods
+  async getVacationById(id: number): Promise<Vacation | undefined> {
+    const [vacation] = await db.select().from(vacations).where(eq(vacations.id, id));
+    return vacation;
+  }
+
+  async createVacation(vacationData: InsertVacation): Promise<Vacation> {
+    const [vacation] = await db.insert(vacations).values(vacationData).returning();
+    return vacation;
+  }
+
+  async updateVacation(id: number, data: Partial<Vacation>): Promise<Vacation | undefined> {
+    const [vacation] = await db.update(vacations)
+      .set(data)
+      .where(eq(vacations.id, id))
+      .returning();
+    return vacation;
+  }
+
+  async listVacationsByStaffId(staffId: number): Promise<Vacation[]> {
+    return db.select().from(vacations).where(eq(vacations.staffId, staffId));
+  }
+
+  async listVacationsByDateRange(startDate: Date, endDate: Date): Promise<Vacation[]> {
+    return db.select().from(vacations)
+      .where(or(
+        and(
+          gte(vacations.startDate, startDate.toISOString().split('T')[0]),
+          lte(vacations.startDate, endDate.toISOString().split('T')[0])
+        ),
+        and(
+          gte(vacations.endDate, startDate.toISOString().split('T')[0]),
+          lte(vacations.endDate, endDate.toISOString().split('T')[0])
+        ),
+        and(
+          lte(vacations.startDate, startDate.toISOString().split('T')[0]),
+          gte(vacations.endDate, endDate.toISOString().split('T')[0])
+        )
+      ));
+  }
+
+  // Change request methods
+  async getChangeRequestById(id: number): Promise<ChangeRequest | undefined> {
+    const [request] = await db.select().from(changeRequests).where(eq(changeRequests.id, id));
+    return request;
+  }
+
+  async createChangeRequest(requestData: InsertChangeRequest): Promise<ChangeRequest> {
+    const [request] = await db.insert(changeRequests)
+      .values({ ...requestData, status: 'pending' as RequestStatus })
+      .returning();
+    return request;
+  }
+
+  async updateChangeRequest(id: number, data: Partial<ChangeRequest>): Promise<ChangeRequest | undefined> {
+    const [request] = await db.update(changeRequests)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(changeRequests.id, id))
+      .returning();
+    return request;
+  }
+
+  async listChangeRequests(): Promise<ChangeRequest[]> {
+    return db.select().from(changeRequests);
+  }
+
+  async listChangeRequestsByStaffId(staffId: number): Promise<ChangeRequest[]> {
+    return db.select().from(changeRequests).where(eq(changeRequests.staffId, staffId));
+  }
+
+  async listChangeRequestsByStatus(status: RequestStatus): Promise<ChangeRequest[]> {
+    return db.select().from(changeRequests).where(eq(changeRequests.status, status));
+  }
+
+  // Delegation methods
+  async getDelegationById(id: number): Promise<Delegation | undefined> {
+    const [delegation] = await db.select().from(delegations).where(eq(delegations.id, id));
+    return delegation;
+  }
+
+  async createDelegation(delegationData: InsertDelegation): Promise<Delegation> {
+    const [delegation] = await db.insert(delegations).values(delegationData).returning();
+    return delegation;
+  }
+
+  async updateDelegation(id: number, data: Partial<Delegation>): Promise<Delegation | undefined> {
+    const [delegation] = await db.update(delegations)
+      .set(data)
+      .where(eq(delegations.id, id))
+      .returning();
+    return delegation;
+  }
+
+  async listDelegationsByHeadNurse(headNurseId: number): Promise<Delegation[]> {
+    return db.select().from(delegations).where(eq(delegations.headNurseId, headNurseId));
+  }
+
+  async listActiveDelegations(): Promise<Delegation[]> {
+    const today = new Date().toISOString().split('T')[0];
+    return db.select().from(delegations)
+      .where(and(
+        eq(delegations.active, true),
+        lte(delegations.startDate, today),
+        or(
+          isNull(delegations.endDate),
+          gte(delegations.endDate, today)
+        )
+      ));
+  }
+
+  // Notification methods
+  async getNotificationById(id: number): Promise<Notification | undefined> {
+    const [notification] = await db.select().from(notifications).where(eq(notifications.id, id));
+    return notification;
+  }
+
+  async createNotification(notificationData: InsertNotification): Promise<Notification> {
+    const [notification] = await db.insert(notifications)
+      .values({ ...notificationData, read: false })
+      .returning();
+    return notification;
+  }
+
+  async updateNotification(id: number, data: Partial<Notification>): Promise<Notification | undefined> {
+    const [notification] = await db.update(notifications)
+      .set(data)
+      .where(eq(notifications.id, id))
+      .returning();
+    return notification;
+  }
+
+  async listNotificationsByUserId(userId: number): Promise<Notification[]> {
+    return db.select().from(notifications)
+      .where(eq(notifications.userId, userId))
+      .orderBy(desc(notifications.createdAt));
+  }
+
+  async listUnreadNotificationsByUserId(userId: number): Promise<Notification[]> {
+    return db.select().from(notifications)
+      .where(and(
+        eq(notifications.userId, userId),
+        eq(notifications.read, false)
+      ))
+      .orderBy(desc(notifications.createdAt));
+  }
+
+  // Schedule generation methods
+  async getScheduleGenerationById(id: number): Promise<ScheduleGeneration | undefined> {
+    const [generation] = await db.select().from(scheduleGenerations).where(eq(scheduleGenerations.id, id));
+    return generation;
+  }
+
+  async createScheduleGeneration(data: InsertScheduleGeneration): Promise<ScheduleGeneration> {
+    const [generation] = await db.insert(scheduleGenerations).values(data).returning();
+    return generation;
+  }
+
+  async listScheduleGenerations(): Promise<ScheduleGeneration[]> {
+    return db.select().from(scheduleGenerations).orderBy(desc(scheduleGenerations.createdAt));
+  }
+
+  // Shift complexity score methods
+  async getShiftComplexityScoreById(id: number): Promise<ShiftComplexityScore | undefined> {
+    const [score] = await db.select().from(shiftComplexityScores).where(eq(shiftComplexityScores.id, id));
+    return score;
+  }
+
+  async getShiftComplexityScoreByShiftId(shiftId: number): Promise<ShiftComplexityScore | undefined> {
+    const [score] = await db.select().from(shiftComplexityScores).where(eq(shiftComplexityScores.shiftId, shiftId));
+    return score;
+  }
+
+  async createShiftComplexityScore(scoreData: InsertShiftComplexityScore): Promise<ShiftComplexityScore> {
+    const [score] = await db.insert(shiftComplexityScores).values(scoreData).returning();
+    return score;
+  }
+
+  async updateShiftComplexityScore(id: number, data: Partial<ShiftComplexityScore>): Promise<ShiftComplexityScore | undefined> {
+    const [score] = await db.update(shiftComplexityScores)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(shiftComplexityScores.id, id))
+      .returning();
+    return score;
+  }
+
+  async listShiftComplexityScores(): Promise<ShiftComplexityScore[]> {
+    return db.select().from(shiftComplexityScores);
+  }
+
+  async listShiftComplexityScoresByDateRange(startDate: Date, endDate: Date): Promise<ShiftComplexityScore[]> {
+    // We need to join with shifts to filter by date
+    const shiftsScoresJoin = db.select({
+      score: shiftComplexityScores,
+    })
+    .from(shiftComplexityScores)
+    .innerJoin(shifts, eq(shiftComplexityScores.shiftId, shifts.id))
+    .where(and(
+      gte(shifts.date, startDate.toISOString().split('T')[0]),
+      lte(shifts.date, endDate.toISOString().split('T')[0])
+    ));
+    
+    const results = await shiftsScoresJoin;
+    return results.map(row => row.score);
+  }
+
+  // Complexity factors methods
+  async getComplexityFactorById(id: number): Promise<ComplexityFactor | undefined> {
+    const [factor] = await db.select().from(complexityFactors).where(eq(complexityFactors.id, id));
+    return factor;
+  }
+
+  async createComplexityFactor(factorData: InsertComplexityFactor): Promise<ComplexityFactor> {
+    const [factor] = await db.insert(complexityFactors).values(factorData).returning();
+    return factor;
+  }
+
+  async listComplexityFactorsByScoreId(scoreId: number): Promise<ComplexityFactor[]> {
+    return db.select().from(complexityFactors).where(eq(complexityFactors.scoreId, scoreId));
+  }
+
+  async listComplexityFactorsByType(factorType: ComplexityFactorType): Promise<ComplexityFactor[]> {
+    return db.select().from(complexityFactors).where(eq(complexityFactors.factorType, factorType));
+  }
+}
+
+// Use DatabaseStorage instead of MemStorage
+export const storage = new DatabaseStorage();
