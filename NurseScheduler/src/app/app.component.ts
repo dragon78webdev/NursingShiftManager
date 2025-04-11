@@ -1,87 +1,104 @@
-import { Component } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
-import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-
-// PrimeNG Components
-import { MenubarModule } from 'primeng/menubar';
-import { ButtonModule } from 'primeng/button';
-import { AvatarModule } from 'primeng/avatar';
-import { ToastModule } from 'primeng/toast';
-import { MessageService } from 'primeng/api';
-import { MenuItem } from 'primeng/api';
+import { Component, OnInit } from '@angular/core';
+import { SwUpdate } from '@angular/service-worker';
+import { PushNotificationService } from './services/push-notification.service';
+import { ToastService } from './services/toast.service';
+import { Router, NavigationEnd } from '@angular/router';
+import { filter } from 'rxjs/operators';
 
 @Component({
   selector: 'app-root',
-  standalone: true,
-  imports: [
-    CommonModule, 
-    RouterOutlet, 
-    FormsModule,
-    MenubarModule,
-    ButtonModule,
-    AvatarModule,
-    ToastModule
-  ],
-  providers: [MessageService],
   templateUrl: './app.component.html',
-  styleUrl: './app.component.scss'
+  styleUrls: ['./app.component.scss']
 })
-export class AppComponent {
-  title = 'NurseScheduler';
-  items: MenuItem[] = [];
-
-  constructor(private messageService: MessageService) {}
+export class AppComponent implements OnInit {
+  title = 'Nurse Scheduler';
+  
+  constructor(
+    private swUpdate: SwUpdate,
+    private pushNotificationService: PushNotificationService,
+    private toastService: ToastService,
+    private router: Router
+  ) {}
 
   ngOnInit() {
-    this.items = [
-      {
-        label: 'Dashboard',
-        icon: 'pi pi-fw pi-home',
-        routerLink: ['/dashboard']
-      },
-      {
-        label: 'Turni',
-        icon: 'pi pi-fw pi-calendar',
-        routerLink: ['/schedule']
-      },
-      {
-        label: 'Personale',
-        icon: 'pi pi-fw pi-users',
-        routerLink: ['/staff']
-      },
-      {
-        label: 'Richieste Cambio',
-        icon: 'pi pi-fw pi-sync',
-        routerLink: ['/change-requests']
-      },
-      {
-        label: 'Ferie & Permessi',
-        icon: 'pi pi-fw pi-calendar-plus',
-        routerLink: ['/vacations']
-      },
-      {
-        label: 'Deleghe',
-        icon: 'pi pi-fw pi-user-plus',
-        routerLink: ['/delegates']
-      },
-      {
-        label: 'Impostazioni',
-        icon: 'pi pi-fw pi-cog',
-        routerLink: ['/settings']
+    // Verifica se c'è un aggiornamento dell'app
+    if (this.swUpdate.isEnabled) {
+      this.swUpdate.available.subscribe(event => {
+        console.log('Disponibile nuovo aggiornamento: ', event);
+        
+        this.toastService.show({
+          severity: 'info',
+          summary: 'Aggiornamento disponibile',
+          detail: 'Cliccando su "Aggiorna" l\'applicazione verrà ricaricata con la nuova versione.',
+          sticky: true,
+          action: {
+            label: 'Aggiorna',
+            callback: () => this.updateApp()
+          }
+        });
+      });
+    }
+
+    // Ascolta le notifiche push
+    if (this.pushNotificationService.isPushNotificationSupported()) {
+      this.setupPushNotifications();
+    }
+
+    // Traccia le navigazioni per analytics
+    this.router.events.pipe(
+      filter(event => event instanceof NavigationEnd)
+    ).subscribe((event: NavigationEnd) => {
+      console.log('Navigazione a:', event.urlAfterRedirects);
+      // Qui potremmo aggiungere il tracciamento con un servizio di analytics
+    });
+  }
+
+  /**
+   * Aggiorna l'applicazione quando è disponibile una nuova versione
+   */
+  private updateApp() {
+    this.swUpdate.activateUpdate().then(() => {
+      window.location.reload();
+    });
+  }
+
+  /**
+   * Configura le notifiche push
+   */
+  private setupPushNotifications() {
+    // Ascolta le notifiche push in arrivo
+    this.pushNotificationService.listenForPushNotifications().subscribe(message => {
+      console.log('Notifica ricevuta:', message);
+      
+      // Mostra un toast per la notifica
+      this.toastService.show({
+        severity: 'info',
+        summary: message.notification?.title || 'Notifica',
+        detail: message.notification?.body || '',
+        action: message.notification?.data?.link ? {
+          label: 'Visualizza',
+          callback: () => this.router.navigateByUrl(message.notification.data.link)
+        } : undefined
+      });
+    });
+
+    // Ascolta i click sulle notifiche push
+    this.pushNotificationService.listenForNotificationClicks().subscribe(event => {
+      console.log('Click su notifica:', event);
+      
+      // Naviga alla pagina specificata nella notifica
+      if (event.notification.data && event.notification.data.link) {
+        this.router.navigateByUrl(event.notification.data.link);
       }
-    ];
-  }
+    });
 
-  showInfo(message: string) {
-    this.messageService.add({ severity: 'info', summary: 'Info', detail: message });
-  }
-
-  showSuccess(message: string) {
-    this.messageService.add({ severity: 'success', summary: 'Successo', detail: message });
-  }
-
-  showError(message: string) {
-    this.messageService.add({ severity: 'error', summary: 'Errore', detail: message });
+    // Verifica se le notifiche sono già autorizzate
+    this.pushNotificationService.isPushNotificationEnabled().subscribe(enabled => {
+      if (!enabled) {
+        // Chiedi l'autorizzazione solo dopo l'interazione dell'utente,
+        // ad esempio dopo un click su un pulsante specifico
+        console.log('Notifiche push non abilitate, verrà mostrato un pulsante per abilitarle');
+      }
+    });
   }
 }

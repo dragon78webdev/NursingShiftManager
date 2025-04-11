@@ -18,6 +18,7 @@ namespace NurseSchedulerAPI.Data
         public DbSet<Delegation> Delegations { get; set; } = null!;
         public DbSet<Notification> Notifications { get; set; } = null!;
         public DbSet<ScheduleGeneration> ScheduleGenerations { get; set; } = null!;
+        public DbSet<PushSubscription> PushSubscriptions { get; set; } = null!;
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -110,6 +111,7 @@ namespace NurseSchedulerAPI.Data
             modelBuilder.Entity<Delegation>().ToTable("Delegations");
             modelBuilder.Entity<Notification>().ToTable("Notifications");
             modelBuilder.Entity<ScheduleGeneration>().ToTable("ScheduleGenerations");
+            modelBuilder.Entity<PushSubscription>().ToTable("PushSubscriptions");
         }
     }
 }
