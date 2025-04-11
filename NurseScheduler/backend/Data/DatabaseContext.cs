@@ -1,3 +1,4 @@
+using System;
 using System.Data;
 using System.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
@@ -11,16 +12,16 @@ namespace NurseScheduler.Data
 
     public class DatabaseContext : IDatabaseContext
     {
-        private readonly IConfiguration _configuration;
+        private readonly string _connectionString;
 
         public DatabaseContext(IConfiguration configuration)
         {
-            _configuration = configuration;
+            _connectionString = configuration.GetConnectionString("DefaultConnection");
         }
 
         public IDbConnection CreateConnection()
         {
-            return new SqlConnection(_configuration.GetConnectionString("DefaultConnection"));
+            return new SqlConnection(_connectionString);
         }
     }
 }
