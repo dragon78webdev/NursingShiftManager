@@ -19,7 +19,7 @@ import Delegates from "./pages/Delegates";
 import NotFound from "./pages/not-found";
 
 // Components
-import Layout from "./components/layout/Layout";
+import Layout from "./components/layout/layout";
 import FirstLoginDialog from "./components/dialogs/FirstLoginDialog";
 
 function App() {
@@ -41,11 +41,15 @@ function App() {
         window.history.replaceState({}, document.title, window.location.pathname);
       }
       
-      // Request notification permission
+      // Request notification permission (disabled for now to fix connectivity issues)
       if (user) {
         const hasPermission = await requestNotificationPermission();
         console.log("Notification permission:", hasPermission ? "granted" : "denied");
         
+        // WebSocket connectivity temporarily disabled while fixing issues
+        console.log("WebSocket connectivity disabled for debugging");
+        
+        /*
         // Setup WebSocket for push notifications
         setupNotificationWebSocket(user.id, (notification) => {
           // Show notification
@@ -54,6 +58,7 @@ function App() {
             data: notification.data,
           });
         });
+        */
       }
     };
 

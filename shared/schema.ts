@@ -7,6 +7,19 @@ export const roleEnum = pgEnum('role', ['nurse', 'oss', 'head_nurse']);
 export const shiftTypeEnum = pgEnum('shift_type', ['M', 'P', 'N', 'R', 'F']);
 export const requestStatusEnum = pgEnum('request_status', ['pending', 'approved', 'rejected']);
 
+// Additional enums for frontend usage
+export enum ShiftRequestStatus {
+  PENDING = 'pending',
+  APPROVED = 'approved',
+  REJECTED = 'rejected'
+}
+
+export enum ShiftRequestType {
+  SWAP = 'swap',
+  TIME_OFF = 'time_off',
+  COMPENSATION = 'compensation'
+}
+
 // Users table
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),

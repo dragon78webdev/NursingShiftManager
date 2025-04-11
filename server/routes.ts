@@ -57,8 +57,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Create HTTP server - make sure it's properly configured for Replit
   const httpServer = createServer(app);
 
-  // Setup WebSocket server for push notifications
-  const wss = new WebSocketServer({ server: httpServer });
+  // Setup WebSocket server for push notifications with a specific path (/ws)
+  // to avoid conflicts with Vite's HMR WebSocket
+  const wss = new WebSocketServer({ 
+    server: httpServer, 
+    path: '/ws' 
+  });
   const clients = new Map<number, WebSocket[]>();
 
   wss.on("connection", (ws, req) => {

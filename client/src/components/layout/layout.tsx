@@ -2,12 +2,14 @@ import React, { useState } from 'react';
 import Header from './header';
 import Sidebar from './sidebar';
 import NotificationsPanel from './notifications-panel';
+import { AuthUser } from '../../lib/types';
 
-interface LayoutProps {
+export interface LayoutProps {
   children: React.ReactNode;
+  user: AuthUser;
 }
 
-export function Layout({ children }: LayoutProps) {
+export function Layout({ children, user }: LayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   
@@ -24,6 +26,7 @@ export function Layout({ children }: LayoutProps) {
       <Header 
         onToggleSidebar={toggleSidebar} 
         onToggleNotifications={toggleNotifications} 
+        user={user}
       />
       
       <div className="flex flex-1 overflow-hidden">

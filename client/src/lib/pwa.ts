@@ -45,8 +45,9 @@ export function setupNotificationWebSocket(userId: number, onMessage: (data: any
   
   // Create WebSocket connection
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}?userId=${userId}`;
+  const wsUrl = `${protocol}//${window.location.host}/ws?userId=${userId}`;
   
+  // Use a specific path to avoid conflicting with Vite's WebSocket
   const socket = new WebSocket(wsUrl);
   
   socket.onopen = () => {

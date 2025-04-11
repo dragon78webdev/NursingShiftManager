@@ -1,26 +1,29 @@
 import React, { useState } from 'react';
-import { useAuth } from '@/hooks/use-auth';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { NotificationsBadge } from '@/components/ui/notifications-badge';
+import { useAuth } from '../../hooks/use-auth';
+import { Avatar, AvatarFallback, AvatarImage } from '../../components/ui/avatar';
+import { NotificationsBadge } from '../../components/ui/notifications-badge';
 import { 
   DropdownMenu, 
   DropdownMenuContent, 
   DropdownMenuItem, 
   DropdownMenuSeparator, 
   DropdownMenuTrigger 
-} from '@/components/ui/dropdown-menu';
+} from '../../components/ui/dropdown-menu';
 import { Menu } from 'lucide-react';
-import { apiRequest } from '@/lib/queryClient';
-import { useToast } from '@/hooks/use-toast';
+import { apiRequest } from '../../lib/queryClient';
+import { useToast } from '../../hooks/use-toast';
 import { useLocation } from 'wouter';
+
+import { AuthUser } from '../../lib/types';
 
 interface HeaderProps {
   onToggleSidebar: () => void;
   onToggleNotifications: () => void;
+  user: AuthUser;
 }
 
-export function Header({ onToggleSidebar, onToggleNotifications }: HeaderProps) {
-  const { user, logout } = useAuth();
+export function Header({ onToggleSidebar, onToggleNotifications, user }: HeaderProps) {
+  const { logout } = useAuth();
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   
@@ -80,7 +83,7 @@ export function Header({ onToggleSidebar, onToggleNotifications }: HeaderProps) 
             <DropdownMenuTrigger asChild>
               <div className="flex items-center ml-4 cursor-pointer">
                 <Avatar className="h-8 w-8">
-                  <AvatarImage src={user?.avatar || ''} alt={user?.name || 'User'} />
+                  <AvatarImage src={user?.imageUrl || ''} alt={user?.name || 'User'} />
                   <AvatarFallback>{user?.name ? getInitials(user.name) : 'U'}</AvatarFallback>
                 </Avatar>
                 <div className="ml-2 hidden md:block">
