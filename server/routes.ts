@@ -1285,6 +1285,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Delete delegation
+  app.delete("/api/delegations/:id", isHeadNurse, async (req, res) => {
+    try {
+      const delegationId = parseInt(req.params.id);
+      const user = req.user as any;
+      
+      const delegation = await storage.getDelegationById(delegationId);
+      if (!delegation) {
+        return res.status(404).json({ message: "Delegation not found" });
+      }
+      
+      // Check if the delegation belongs to the user
+      if (delegation.headNurseId !== user.id) {
+        return res.status(403).json({ message: "Not authorized" });
+      }
+      
+      // Delete the delegation
+      await storage.updateDelegation(delegationId, { active: false });
+      
+      // Notify the delegated user
+      const delegatedTo = await storage.getUserById(delegation.delegatedToId);
+      if (delegatedTo) {
+        // Create notification
+        await storage.createNotification({
+          userId: delegatedTo.id,
+          title: "Delega rimossa",
+          message: `${user.name} ha rimosso la tua delega di gestione turni`,
+          type: "delegation_removed"
+        });
+        
+        // Send push notification
+        sendPushNotification(delegatedTo.id, {
+          type: "delegation_removed",
+          title: "Delega rimossa",
+          message: `${user.name} ha rimosso la tua delega di gestione turni`,
+          data: {
+            delegationId: delegation.id
+          }
+        });
+      }
+      
+      res.json({ success: true });
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  });
+
   // PWA manifest
   app.get("/manifest.json", (req, res) => {
     res.json({
