@@ -1,0 +1,43 @@
+<div class="pwa-install-container" *ngIf="showInstallButton">
+  <!-- Per dispositivi diversi da iOS -->
+  <div *ngIf="!isIos" class="pwa-install-button">
+    <p-button 
+      label="Installa App" 
+      icon="pi pi-download" 
+      (onClick)="installPwa()" 
+      styleClass="p-button-sm" 
+      pTooltip="Installa Nurse Scheduler sul tuo dispositivo"></p-button>
+  </div>
+  
+  <!-- Per dispositivi iOS -->
+  <div *ngIf="isIos" class="pwa-install-ios">
+    <p-button 
+      label="Come installare l'app" 
+      icon="pi pi-info-circle" 
+      (onClick)="toggleIosInstructions()" 
+      styleClass="p-button-sm p-button-outlined"></p-button>
+    
+    <!-- Istruzioni di installazione per iOS -->
+    <div class="pwa-ios-instructions" *ngIf="showIosInstructions">
+      <p-card header="Installa Nurse Scheduler sul tuo dispositivo iOS" styleClass="ios-instructions-card">
+        <div class="instructions-steps">
+          <ol>
+            <li>Tocca l'icona <i class="pi pi-share-alt"></i> nella barra degli strumenti di Safari</li>
+            <li>Scorri verso il basso e tocca <strong>Aggiungi a Home</strong></li>
+            <li>Tocca <strong>Aggiungi</strong> nell'angolo in alto a destra</li>
+          </ol>
+          <div class="ios-instruction-images">
+            <img src="assets/images/ios-install-1.png" alt="Passo 1">
+            <img src="assets/images/ios-install-2.png" alt="Passo 2">
+          </div>
+        </div>
+        <ng-template pTemplate="footer">
+          <p-button 
+            label="Ho capito" 
+            (onClick)="toggleIosInstructions()" 
+            styleClass="p-button-sm"></p-button>
+        </ng-template>
+      </p-card>
+    </div>
+  </div>
+</div>

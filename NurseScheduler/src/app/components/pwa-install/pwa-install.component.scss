@@ -1,0 +1,65 @@
+.pwa-install-container {
+  margin: 1rem 0;
+}
+
+.pwa-install-button {
+  display: flex;
+  justify-content: center;
+}
+
+.pwa-install-ios {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.pwa-ios-instructions {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  padding: 1rem;
+
+  .ios-instructions-card {
+    max-width: 500px;
+    width: 100%;
+    
+    ::ng-deep .p-card-content {
+      padding-top: 0;
+    }
+  }
+
+  .instructions-steps {
+    ol {
+      padding-left: 1.5rem;
+      margin-bottom: 1rem;
+      
+      li {
+        margin-bottom: 0.5rem;
+        
+        &:last-child {
+          margin-bottom: 0;
+        }
+      }
+    }
+  }
+
+  .ios-instruction-images {
+    display: flex;
+    justify-content: space-around;
+    margin-top: 1rem;
+    
+    img {
+      width: 45%;
+      max-width: 200px;
+      border-radius: 8px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+  }
+}

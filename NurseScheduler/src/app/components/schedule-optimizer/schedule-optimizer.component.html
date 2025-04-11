@@ -1,0 +1,202 @@
+<div class="optimizer-container">
+  <div class="card">
+    <div class="card-header">
+      <h2>Ottimizzatore Planning</h2>
+      <p class="subtitle">Periodo: {{ startDate | date:'dd/MM/yyyy' }} - {{ endDate | date:'dd/MM/yyyy' }}</p>
+    </div>
+    
+    <div class="card-body">
+      <div *ngIf="loading" class="loading-container">
+        <p-progressSpinner></p-progressSpinner>
+        <p>Elaborazione in corso...</p>
+      </div>
+      
+      <div *ngIf="error" class="error-container">
+        <p-message severity="error" [text]="error"></p-message>
+      </div>
+      
+      <div class="grid">
+        <!-- Pannello del grafico radar -->
+        <div class="col-12 md:col-6 lg:col-8">
+          <div class="chart-container">
+            <canvas id="qualityRadarChart"></canvas>
+          </div>
+        </div>
+        
+        <!-- Pannello dei punteggi e controlli -->
+        <div class="col-12 md:col-6 lg:col-4">
+          <div class="score-panel">
+            <div class="quality-score">
+              <div class="score-circle" [ngClass]="getScoreClass()">
+                {{ qualityScore }}
+              </div>
+              <div class="score-label">Punteggio Qualità</div>
+            </div>
+            
+            <div class="metrics-summary" *ngIf="metrics">
+              <h3>Statistiche</h3>
+              <div class="metric-item">
+                <span class="metric-label">Turni mattina:</span>
+                <span class="metric-value">{{ metrics.totalMorningShifts }}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Turni pomeriggio:</span>
+                <span class="metric-value">{{ metrics.totalAfternoonShifts }}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Turni notte:</span>
+                <span class="metric-value">{{ metrics.totalNightShifts }}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Giorni riposo:</span>
+                <span class="metric-value">{{ metrics.totalRestDays }}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Giorni ferie:</span>
+                <span class="metric-value">{{ metrics.totalVacationDays }}</span>
+              </div>
+            </div>
+            
+            <div class="optimization-controls">
+              <h3>Ottimizzazione</h3>
+              
+              <div class="p-field">
+                <label for="maxIterations">Iterazioni massime</label>
+                <p-inputNumber id="maxIterations" [(ngModel)]="optimizationParameters.maxIterations" 
+                  [showButtons]="true" [min]="100" [max]="10000" [step]="100"></p-inputNumber>
+              </div>
+              
+              <div class="p-field">
+                <label for="coolingRate">Tasso di raffreddamento</label>
+                <p-slider id="coolingRate" [(ngModel)]="optimizationParameters.coolingRate" 
+                  [min]="0.9" [max]="0.999" [step]="0.001"></p-slider>
+                <small>{{ optimizationParameters.coolingRate | number:'1.3-3' }}</small>
+              </div>
+              
+              <div class="p-field">
+                <label for="initialTemperature">Temperatura iniziale</label>
+                <p-inputNumber id="initialTemperature" [(ngModel)]="optimizationParameters.initialTemperature" 
+                  [showButtons]="true" [min]="10" [max]="1000" [step]="10"></p-inputNumber>
+              </div>
+              
+              <div class="buttons-container">
+                <p-button label="Genera Planning" icon="pi pi-magic" (onClick)="generateSchedule()" 
+                  [disabled]="loading" styleClass="p-button-success"></p-button>
+                
+                <p-button label="Cancella Turni" icon="pi pi-trash" (onClick)="clearExistingShifts()" 
+                  [disabled]="loading" styleClass="p-button-danger" class="ml-2"></p-button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Pannello dei dettagli delle metriche -->
+  <div class="card mt-3" *ngIf="metrics">
+    <div class="card-header">
+      <h3>Dettagli Metriche di Qualità</h3>
+    </div>
+    
+    <div class="card-body">
+      <p-tabView>
+        <p-tabPanel header="Carico di Lavoro">
+          <div class="grid">
+            <div class="col-12 md:col-4">
+              <div class="metric-detail-item">
+                <span class="metric-detail-label">Carico minimo:</span>
+                <span class="metric-detail-value">{{ metrics.minWorkload }} turni</span>
+              </div>
+              <div class="metric-detail-item">
+                <span class="metric-detail-label">Carico massimo:</span>
+                <span class="metric-detail-value">{{ metrics.maxWorkload }} turni</span>
+              </div>
+              <div class="metric-detail-item">
+                <span class="metric-detail-label">Carico medio:</span>
+                <span class="metric-detail-value">{{ metrics.avgWorkload | number:'1.1-1' }} turni</span>
+              </div>
+              <div class="metric-detail-item">
+                <span class="metric-detail-label">Deviazione:</span>
+                <span class="metric-detail-value">{{ metrics.maxWorkload - metrics.minWorkload }} turni</span>
+              </div>
+            </div>
+            
+            <div class="col-12 md:col-8">
+              <p>
+                <strong>Interpretazione:</strong> La deviazione tra il carico di lavoro massimo e minimo indica quanto 
+                è equamente distribuito il lavoro tra i membri dello staff. Una deviazione più bassa indica una 
+                distribuzione più equilibrata.
+              </p>
+              <p>
+                <strong>Obiettivo:</strong> Mantenere la deviazione sotto i 2 turni per periodi di un mese.
+              </p>
+            </div>
+          </div>
+        </p-tabPanel>
+        
+        <p-tabPanel header="Weekend">
+          <div class="grid">
+            <div class="col-12 md:col-4">
+              <div class="metric-detail-item">
+                <span class="metric-detail-label">Min weekend lavorati:</span>
+                <span class="metric-detail-value">{{ metrics.minWeekendWorkdays }} giorni</span>
+              </div>
+              <div class="metric-detail-item">
+                <span class="metric-detail-label">Max weekend lavorati:</span>
+                <span class="metric-detail-value">{{ metrics.maxWeekendWorkdays }} giorni</span>
+              </div>
+              <div class="metric-detail-item">
+                <span class="metric-detail-label">Media weekend lavorati:</span>
+                <span class="metric-detail-value">{{ metrics.avgWeekendWorkdays | number:'1.1-1' }} giorni</span>
+              </div>
+            </div>
+            
+            <div class="col-12 md:col-8">
+              <p>
+                <strong>Interpretazione:</strong> Queste metriche mostrano quanto equamente sono distribuiti i turni 
+                di weekend tra i membri dello staff. Idealmente, ogni membro dello staff dovrebbe lavorare lo stesso 
+                numero di giorni di weekend.
+              </p>
+              <p>
+                <strong>Obiettivo:</strong> Mantenere la differenza tra il minimo e il massimo di giorni di weekend 
+                lavorati sotto 1 per periodi mensili.
+              </p>
+            </div>
+          </div>
+        </p-tabPanel>
+        
+        <p-tabPanel header="Violazioni">
+          <div class="grid">
+            <div class="col-12 md:col-4">
+              <div class="metric-detail-item">
+                <span class="metric-detail-label">Notte seguita da mattina:</span>
+                <span class="metric-detail-value">{{ metrics.nightToMorningViolations }} violazioni</span>
+              </div>
+            </div>
+            
+            <div class="col-12 md:col-8">
+              <p>
+                <strong>Interpretazione:</strong> Questa metrica conta quante volte un membro dello staff ha un turno 
+                di mattina immediatamente dopo un turno di notte, senza un adeguato periodo di riposo. Questa è una 
+                violazione importante delle buone pratiche di scheduling.
+              </p>
+              <p>
+                <strong>Obiettivo:</strong> Zero violazioni. Dopo un turno di notte, un membro dello staff dovrebbe 
+                avere almeno 24 ore di riposo prima di iniziare un turno di mattina.
+              </p>
+            </div>
+          </div>
+        </p-tabPanel>
+      </p-tabView>
+    </div>
+  </div>
+</div>
+
+<!-- Template per le funzioni helper -->
+<ng-template #noDataTemplate>
+  <div class="no-data">
+    <i class="pi pi-info-circle"></i>
+    <p>Nessun dato disponibile</p>
+  </div>
+</ng-template>

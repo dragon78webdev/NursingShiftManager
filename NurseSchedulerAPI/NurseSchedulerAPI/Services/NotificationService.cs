@@ -1,22 +1,30 @@
-using Microsoft.EntityFrameworkCore;
-using NurseSchedulerAPI.Data;
-using NurseSchedulerAPI.Models;
 using System.Text.Json;
+using NurseSchedulerAPI.Models;
+using NurseSchedulerAPI.Repositories;
 
 namespace NurseSchedulerAPI.Services
 {
     public class NotificationService
     {
-        private readonly ApplicationDbContext _context;
+        private readonly INotificationRepository _notificationRepository;
+        private readonly IPushSubscriptionRepository _pushSubscriptionRepository;
+        private readonly IUserRepository _userRepository;
+        private readonly IStaffRepository _staffRepository;
         private readonly ILogger<NotificationService> _logger;
         private readonly IConfiguration _configuration;
 
         public NotificationService(
-            ApplicationDbContext context,
+            INotificationRepository notificationRepository,
+            IPushSubscriptionRepository pushSubscriptionRepository,
+            IUserRepository userRepository,
+            IStaffRepository staffRepository,
             ILogger<NotificationService> logger,
             IConfiguration configuration)
         {
-            _context = context;
+            _notificationRepository = notificationRepository;
+            _pushSubscriptionRepository = pushSubscriptionRepository;
+            _userRepository = userRepository;
+            _staffRepository = staffRepository;
             _logger = logger;
             _configuration = configuration;
         }
@@ -44,13 +52,12 @@ namespace NurseSchedulerAPI.Services
                     CreatedAt = DateTime.UtcNow
                 };
 
-                _context.Notifications.Add(notification);
-                await _context.SaveChangesAsync();
+                var createdNotification = await _notificationRepository.CreateAsync(notification);
 
                 // Invia la notifica push se l'utente ha un dispositivo registrato
                 await SendPushNotificationAsync(userId, title, message, type, link);
 
-                return notification;
+                return createdNotification;
             }
             catch (Exception ex)
             {
@@ -72,9 +79,7 @@ namespace NurseSchedulerAPI.Services
             try
             {
                 // Recupera le sottoscrizioni push dell'utente
-                var subscriptions = await _context.PushSubscriptions
-                    .Where(ps => ps.UserId == userId)
-                    .ToListAsync();
+                var subscriptions = await _pushSubscriptionRepository.GetByUserIdAsync(userId);
 
                 if (!subscriptions.Any())
                 {
@@ -114,6 +119,10 @@ namespace NurseSchedulerAPI.Services
                 {
                     try
                     {
+                        // Aggiorna l'ultima volta che la sottoscrizione è stata utilizzata
+                        subscription.LastUsedAt = DateTime.UtcNow;
+                        await _pushSubscriptionRepository.UpdateAsync(subscription.Id, subscription);
+
                         // Qui dovremmo implementare l'invio effettivo tramite Web Push
                         // Per ora, logghiamo solo l'operazione
                         _logger.LogInformation($"Invio notifica push all'utente {userId} con subscription {subscription.Id}");
@@ -133,18 +142,16 @@ namespace NurseSchedulerAPI.Services
         /// <summary>
         /// Ottiene le notifiche di un utente
         /// </summary>
-        public async Task<List<Notification>> GetUserNotificationsAsync(int userId, bool unreadOnly = false)
+        public async Task<IEnumerable<Notification>> GetUserNotificationsAsync(int userId, bool unreadOnly = false)
         {
             try
             {
-                var query = _context.Notifications.Where(n => n.UserId == userId);
-                
                 if (unreadOnly)
                 {
-                    query = query.Where(n => !n.Read);
+                    return await _notificationRepository.GetUnreadByUserIdAsync(userId);
                 }
                 
-                return await query.OrderByDescending(n => n.CreatedAt).ToListAsync();
+                return await _notificationRepository.GetByUserIdAsync(userId);
             }
             catch (Exception ex)
             {
@@ -160,17 +167,14 @@ namespace NurseSchedulerAPI.Services
         {
             try
             {
-                var notification = await _context.Notifications.FindAsync(notificationId);
+                var notification = await _notificationRepository.GetByIdAsync(notificationId);
                 if (notification == null)
                 {
                     throw new KeyNotFoundException($"Notifica con ID {notificationId} non trovata");
                 }
 
-                notification.Read = true;
-                notification.ReadAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
-
-                return notification;
+                var updatedNotification = await _notificationRepository.MarkAsReadAsync(notificationId);
+                return updatedNotification ?? throw new Exception($"Errore nell'aggiornamento della notifica {notificationId}");
             }
             catch (Exception ex)
             {
@@ -186,33 +190,27 @@ namespace NurseSchedulerAPI.Services
         {
             try
             {
-                // Ottieni i dettagli del turno e dello staff
-                var shift = await _context.Shifts
-                    .Include(s => s.Staff)
-                    .FirstOrDefaultAsync(s => s.Id == request.ShiftId);
+                // Ottieni i dettagli dello staff
+                var staff = await _staffRepository.GetByIdAsync(request.StaffId);
                 
-                if (shift == null || shift.Staff == null)
+                if (staff == null)
                 {
-                    _logger.LogWarning($"Impossibile trovare il turno {request.ShiftId} per la notifica di cambio turno");
+                    _logger.LogWarning($"Impossibile trovare lo staff {request.StaffId} per la notifica di cambio turno");
                     return;
                 }
 
-                // Ottieni tutti i caposala o delegati
-                var headNurses = await _context.Staff
-                    .Include(s => s.User)
-                    .Where(s => s.Role == Role.HeadNurse && s.User != null && s.User.IsActive)
-                    .Select(s => s.User)
-                    .ToListAsync();
+                // Ottieni tutti i caposala
+                var headNurses = await _staffRepository.GetByRoleAsync("HeadNurse");
 
                 // Crea notifica per ogni caposala
                 foreach (var headNurse in headNurses)
                 {
-                    if (headNurse == null) continue;
+                    if (headNurse.User == null) continue;
                     
                     await CreateNotificationAsync(
-                        headNurse.Id, 
+                        headNurse.User.Id, 
                         "Nuova richiesta di cambio turno", 
-                        $"{shift.Staff.Name} ha richiesto un cambio turno per il {shift.Date:dd/MM/yyyy}",
+                        $"{staff.Name} ha richiesto un cambio turno",
                         "Request",
                         "/change-requests");
                 }
@@ -230,9 +228,7 @@ namespace NurseSchedulerAPI.Services
         {
             try
             {
-                var staff = await _context.Staff
-                    .Include(s => s.User)
-                    .FirstOrDefaultAsync(s => s.Id == request.StaffId);
+                var staff = await _staffRepository.GetByIdAsync(request.StaffId);
                 
                 if (staff?.User == null)
                 {
@@ -242,8 +238,8 @@ namespace NurseSchedulerAPI.Services
 
                 var statusText = request.Status switch
                 {
-                    RequestStatus.Approved => "approvata",
-                    RequestStatus.Rejected => "rifiutata",
+                    "approved" => "approvata",
+                    "rejected" => "rifiutata",
                     _ => "aggiornata"
                 };
 
@@ -251,7 +247,7 @@ namespace NurseSchedulerAPI.Services
                     staff.User.Id,
                     $"Richiesta di cambio turno {statusText}",
                     $"La tua richiesta di cambio turno è stata {statusText}.",
-                    request.Status == RequestStatus.Approved ? "Success" : "Warning",
+                    request.Status == "approved" ? "Success" : "Warning",
                     "/change-requests");
             }
             catch (Exception ex)
@@ -267,8 +263,7 @@ namespace NurseSchedulerAPI.Services
         {
             try
             {
-                var staff = await _context.Staff
-                    .FirstOrDefaultAsync(s => s.Id == vacation.StaffId);
+                var staff = await _staffRepository.GetByIdAsync(vacation.StaffId);
                 
                 if (staff == null)
                 {
@@ -277,19 +272,15 @@ namespace NurseSchedulerAPI.Services
                 }
 
                 // Ottieni tutti i caposala
-                var headNurses = await _context.Staff
-                    .Include(s => s.User)
-                    .Where(s => s.Role == Role.HeadNurse && s.User != null && s.User.IsActive)
-                    .Select(s => s.User)
-                    .ToListAsync();
+                var headNurses = await _staffRepository.GetByRoleAsync("HeadNurse");
 
                 // Crea notifica per ogni caposala
                 foreach (var headNurse in headNurses)
                 {
-                    if (headNurse == null) continue;
+                    if (headNurse.User == null) continue;
                     
                     await CreateNotificationAsync(
-                        headNurse.Id,
+                        headNurse.User.Id,
                         "Nuova richiesta di ferie",
                         $"{staff.Name} ha richiesto ferie dal {vacation.StartDate:dd/MM/yyyy} al {vacation.EndDate:dd/MM/yyyy}",
                         "Request",
@@ -309,9 +300,7 @@ namespace NurseSchedulerAPI.Services
         {
             try
             {
-                var staff = await _context.Staff
-                    .Include(s => s.User)
-                    .FirstOrDefaultAsync(s => s.Id == vacation.StaffId);
+                var staff = await _staffRepository.GetByIdAsync(vacation.StaffId);
                 
                 if (staff?.User == null)
                 {
@@ -319,12 +308,9 @@ namespace NurseSchedulerAPI.Services
                     return;
                 }
 
-                var statusText = vacation.Approved switch
-                {
-                    true => "approvata",
-                    false => "rifiutata",
-                    _ => "aggiornata"
-                };
+                var statusText = vacation.Approved.HasValue 
+                    ? (vacation.Approved.Value ? "approvata" : "rifiutata")
+                    : "aggiornata";
 
                 await CreateNotificationAsync(
                     staff.User.Id,
@@ -342,24 +328,19 @@ namespace NurseSchedulerAPI.Services
         /// <summary>
         /// Notifica per tutti gli utenti della generazione di un nuovo planning
         /// </summary>
-        public async Task NotifyNewScheduleAsync(DateTime startDate, DateTime endDate, Role staffType)
+        public async Task NotifyNewScheduleAsync(DateTime startDate, DateTime endDate, string staffType)
         {
             try
             {
                 // Ottieni tutti gli utenti interessati
-                var usersQuery = _context.Staff
-                    .Include(s => s.User)
-                    .Where(s => s.Role == staffType && s.User != null && s.User.IsActive)
-                    .Select(s => s.User);
+                var staffMembers = await _staffRepository.GetByRoleAsync(staffType);
                 
-                var users = await usersQuery.ToListAsync();
-
-                foreach (var user in users)
+                foreach (var staff in staffMembers)
                 {
-                    if (user == null) continue;
+                    if (staff.User == null) continue;
                     
                     await CreateNotificationAsync(
-                        user.Id,
+                        staff.User.Id,
                         "Nuovo planning disponibile",
                         $"È disponibile un nuovo planning dal {startDate:dd/MM/yyyy} al {endDate:dd/MM/yyyy}",
                         "Info",

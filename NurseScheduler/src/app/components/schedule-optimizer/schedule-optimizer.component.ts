@@ -1,505 +1,261 @@
-import { Component, EventEmitter, Input, OnInit, Output } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-
-// PrimeNG Components
-import { CardModule } from 'primeng/card';
-import { SliderModule } from 'primeng/slider';
-import { CheckboxModule } from 'primeng/checkbox';
-import { ButtonModule } from 'primeng/button';
-import { InputNumberModule } from 'primeng/inputnumber';
-import { AccordionModule } from 'primeng/accordion';
-import { TooltipModule } from 'primeng/tooltip';
-import { ChartModule } from 'primeng/chart';
-import { DividerModule } from 'primeng/divider';
-
-// Services and Models
-import { OptimizationParams, SchedulerService } from '@services/scheduler.service';
-import { ShiftType, Role, Shift, Staff, Vacation } from '@models/models';
-import { MessageService } from 'primeng/api';
+import { Component, OnInit, Input, OnChanges, SimpleChanges } from '@angular/core';
+import { SchedulerService } from '../../services/scheduler.service';
+import { Chart, ChartConfiguration, RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend, ChartData } from 'chart.js';
+import { ActivatedRoute } from '@angular/router';
 
 @Component({
   selector: 'app-schedule-optimizer',
-  standalone: true,
-  imports: [
-    CommonModule,
-    FormsModule,
-    CardModule,
-    SliderModule,
-    CheckboxModule,
-    ButtonModule,
-    InputNumberModule,
-    AccordionModule,
-    TooltipModule,
-    ChartModule,
-    DividerModule
-  ],
-  providers: [MessageService],
-  template: `
-    <p-card header="Ottimizzazione Avanzata Schedulazione" 
-           subheader="Configura i parametri per migliorare la generazione dei turni"
-           styleClass="optimizer-card">
-      <p-accordion [multiple]="true">
-        <!-- Parametri Base -->
-        <p-accordionTab header="Parametri Base" [selected]="true">
-          <div class="optimizer-section">
-            <div class="optimizer-param">
-              <label for="minConsecutiveRestDays">Giorni minimi di riposo consecutivi</label>
-              <div class="optimizer-control">
-                <p-inputNumber id="minConsecutiveRestDays" 
-                             [(ngModel)]="optimizationParams.minConsecutiveRestDays"
-                             [min]="1" [max]="5" [showButtons]="true"></p-inputNumber>
-                <div class="param-description">
-                  Garantisce che ogni persona abbia almeno questo numero di giorni di riposo consecutivi.
-                </div>
-              </div>
-            </div>
-            
-            <div class="optimizer-param">
-              <label for="maxConsecutiveWorkDays">Giorni massimi di lavoro consecutivi</label>
-              <div class="optimizer-control">
-                <p-inputNumber id="maxConsecutiveWorkDays" 
-                             [(ngModel)]="optimizationParams.maxConsecutiveWorkDays"
-                             [min]="3" [max]="7" [showButtons]="true"></p-inputNumber>
-                <div class="param-description">
-                  Limita il numero massimo di giorni di lavoro consecutivi per persona.
-                </div>
-              </div>
-            </div>
-          </div>
-        </p-accordionTab>
-        
-        <!-- Opzioni Avanzate -->
-        <p-accordionTab header="Opzioni Avanzate">
-          <div class="optimizer-section">
-            <div class="optimizer-param-checkbox">
-              <p-checkbox [(ngModel)]="optimizationParams.considerPreferences" 
-                        [binary]="true" inputId="considerPreferences"></p-checkbox>
-              <label for="considerPreferences">Considera preferenze personali</label>
-              <span class="p-help-text">
-                Se abilitato, l'algoritmo terrà conto delle preferenze di turno espresse dal personale.
-              </span>
-            </div>
-            
-            <div class="optimizer-param-checkbox">
-              <p-checkbox [(ngModel)]="optimizationParams.balanceWorkload" 
-                        [binary]="true" inputId="balanceWorkload"></p-checkbox>
-              <label for="balanceWorkload">Bilancia carichi di lavoro</label>
-              <span class="p-help-text">
-                Distribuisce equamente i turni tra il personale, considerando anche le ore part-time.
-              </span>
-            </div>
-            
-            <div class="optimizer-param-checkbox">
-              <p-checkbox [(ngModel)]="optimizationParams.avoidNightAfterMorning" 
-                        [binary]="true" inputId="avoidNightAfterMorning"></p-checkbox>
-              <label for="avoidNightAfterMorning">Evita notte dopo mattina</label>
-              <span class="p-help-text">
-                Evita di assegnare un turno notturno subito dopo un turno mattutino.
-              </span>
-            </div>
-            
-            <div class="optimizer-param-checkbox">
-              <p-checkbox [(ngModel)]="optimizationParams.respectSeniority" 
-                        [binary]="true" inputId="respectSeniority"></p-checkbox>
-              <label for="respectSeniority">Rispetta anzianità</label>
-              <span class="p-help-text">
-                Assegna turni più favorevoli al personale con maggiore anzianità.
-              </span>
-            </div>
-            
-            <div class="optimizer-param-checkbox">
-              <p-checkbox [(ngModel)]="optimizationParams.optimizeWeekends" 
-                        [binary]="true" inputId="optimizeWeekends"></p-checkbox>
-              <label for="optimizeWeekends">Ottimizza weekend</label>
-              <span class="p-help-text">
-                Cerca di garantire un numero equo di weekend liberi per tutti.
-              </span>
-            </div>
-            
-            <div class="optimizer-param-checkbox">
-              <p-checkbox [(ngModel)]="optimizationParams.avoidIsolatedWorkDays" 
-                        [binary]="true" inputId="avoidIsolatedWorkDays"></p-checkbox>
-              <label for="avoidIsolatedWorkDays">Evita giorni di lavoro isolati</label>
-              <span class="p-help-text">
-                Evita di programmare un singolo giorno di lavoro tra giorni di riposo.
-              </span>
-            </div>
-          </div>
-        </p-accordionTab>
-        
-        <!-- Analisi Qualità -->
-        <p-accordionTab header="Analisi Qualità Turni" *ngIf="hasScheduleData">
-          <div class="chart-container" *ngIf="scheduleQualityData">
-            <div class="chart-wrapper">
-              <h3>Qualità Complessiva</h3>
-              <p-chart type="radar" [data]="scheduleQualityData" [options]="chartOptions"></p-chart>
-            </div>
-            
-            <p-divider></p-divider>
-            
-            <div class="quality-metrics">
-              <h3>Metriche di Qualità</h3>
-              <div class="quality-metric-item" *ngFor="let metric of qualityMetrics">
-                <div class="metric-name">{{ metric.name }}</div>
-                <div class="metric-value">
-                  <span [ngClass]="getMetricClass(metric.score)">{{ metric.score }}/10</span>
-                </div>
-                <div class="metric-description">{{ metric.description }}</div>
-              </div>
-            </div>
-          </div>
-          
-          <div class="no-data-message" *ngIf="!scheduleQualityData">
-            <p>Genera o carica i turni per visualizzare l'analisi della qualità.</p>
-          </div>
-        </p-accordionTab>
-      </p-accordion>
-      
-      <div class="optimizer-actions">
-        <p-button label="Resetta Impostazioni" icon="pi pi-refresh" 
-                styleClass="p-button-outlined p-button-secondary mr-2"
-                (onClick)="resetToDefault()"></p-button>
-        <p-button label="Analizza Qualità" icon="pi pi-chart-bar" 
-                styleClass="p-button-outlined mr-2"
-                [disabled]="!hasScheduleData"
-                (onClick)="analyzeScheduleQuality()"></p-button>
-        <p-button label="Ottimizza Turni" icon="pi pi-cog" 
-                styleClass="p-button-success"
-                [disabled]="!hasScheduleData"
-                (onClick)="optimizeSchedule()"></p-button>
-      </div>
-    </p-card>
-  `,
-  styles: [`
-    .optimizer-card {
-      margin-bottom: 1rem;
-    }
-    
-    .optimizer-section {
-      display: flex;
-      flex-direction: column;
-      gap: 1.5rem;
-    }
-    
-    .optimizer-param {
-      display: flex;
-      flex-direction: column;
-      margin-bottom: 1rem;
-    }
-    
-    .optimizer-param label {
-      font-weight: 500;
-      margin-bottom: 0.5rem;
-    }
-    
-    .optimizer-control {
-      display: flex;
-      flex-direction: column;
-    }
-    
-    .param-description {
-      font-size: 0.8rem;
-      color: #6c757d;
-      margin-top: 0.5rem;
-    }
-    
-    .optimizer-param-checkbox {
-      display: flex;
-      align-items: flex-start;
-      margin-bottom: 1rem;
-    }
-    
-    .optimizer-param-checkbox label {
-      margin-left: 0.5rem;
-      font-weight: 500;
-    }
-    
-    .optimizer-param-checkbox .p-help-text {
-      display: block;
-      margin-left: 1.75rem;
-      font-size: 0.8rem;
-      color: #6c757d;
-    }
-    
-    .optimizer-actions {
-      display: flex;
-      justify-content: flex-end;
-      margin-top: 1rem;
-      padding-top: 1rem;
-      border-top: 1px solid #e9ecef;
-    }
-    
-    .chart-container {
-      margin: 1rem 0;
-    }
-    
-    .chart-wrapper {
-      margin-bottom: 1.5rem;
-    }
-    
-    .quality-metrics {
-      margin-top: 1.5rem;
-    }
-    
-    .quality-metric-item {
-      display: flex;
-      flex-direction: column;
-      margin-bottom: 1rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid #f0f0f0;
-    }
-    
-    .quality-metric-item:last-child {
-      border-bottom: none;
-    }
-    
-    .metric-name {
-      font-weight: 500;
-    }
-    
-    .metric-value {
-      margin: 0.25rem 0;
-      font-weight: bold;
-    }
-    
-    .metric-description {
-      font-size: 0.9rem;
-      color: #6c757d;
-    }
-    
-    .metric-good {
-      color: #2e7d32;
-    }
-    
-    .metric-average {
-      color: #ed6c02;
-    }
-    
-    .metric-poor {
-      color: #d32f2f;
-    }
-    
-    .mr-2 {
-      margin-right: 0.5rem;
-    }
-    
-    .no-data-message {
-      text-align: center;
-      padding: 2rem 0;
-      color: #6c757d;
-    }
-  `]
+  templateUrl: './schedule-optimizer.component.html',
+  styleUrls: ['./schedule-optimizer.component.scss']
 })
-export class ScheduleOptimizerComponent implements OnInit {
-  @Input() shifts: Shift[] = [];
-  @Input() staff: Staff[] = [];
-  @Input() vacations: Vacation[] = [];
-  @Input() startDate: string = '';
-  @Input() endDate: string = '';
-  @Input() staffType: Role = Role.Nurse;
+export class ScheduleOptimizerComponent implements OnInit, OnChanges {
+  @Input() startDate: Date = new Date();
+  @Input() endDate: Date = new Date();
+  @Input() staffType: string = 'nurse';
   
-  @Output() optimizationComplete = new EventEmitter<Shift[]>();
+  metrics: any = null;
+  loading = false;
+  error = '';
   
-  optimizationParams: OptimizationParams = {
-    minConsecutiveRestDays: 2,
-    maxConsecutiveWorkDays: 5,
-    considerPreferences: true,
-    balanceWorkload: true,
-    avoidNightAfterMorning: true,
-    respectSeniority: false,
-    optimizeWeekends: true,
-    avoidIsolatedWorkDays: true
+  // Configurazione del grafico radar
+  radarChart: Chart | null = null;
+  qualityScore: number = 0;
+  
+  // Parametri di ottimizzazione
+  optimizationParameters = {
+    maxIterations: 1000,
+    coolingRate: 0.995,
+    initialTemperature: 100.0
   };
-  
-  scheduleQualityData: any = null;
-  chartOptions: any;
-  qualityMetrics: any[] = [];
-  
-  get hasScheduleData(): boolean {
-    return this.shifts.length > 0 && this.staff.length > 0;
-  }
   
   constructor(
     private schedulerService: SchedulerService,
-    private messageService: MessageService
-  ) {}
-  
+    private route: ActivatedRoute
+  ) {
+    // Registra i componenti di Chart.js
+    Chart.register(RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
+  }
+
   ngOnInit(): void {
-    this.initializeChartOptions();
-  }
-  
-  initializeChartOptions(): void {
-    this.chartOptions = {
-      scales: {
-        r: {
-          pointLabels: {
-            font: {
-              size: 12
-            }
-          },
-          min: 0,
-          max: 10,
-          ticks: {
-            stepSize: 2
-          }
-        }
-      },
-      plugins: {
-        legend: {
-          position: 'bottom'
-        }
+    // Controlla se ci sono parametri nella rotta
+    this.route.queryParams.subscribe(params => {
+      if (params['startDate']) {
+        this.startDate = new Date(params['startDate']);
       }
-    };
-  }
-  
-  resetToDefault(): void {
-    this.optimizationParams = {
-      minConsecutiveRestDays: 2,
-      maxConsecutiveWorkDays: 5,
-      considerPreferences: true,
-      balanceWorkload: true,
-      avoidNightAfterMorning: true,
-      respectSeniority: false,
-      optimizeWeekends: true,
-      avoidIsolatedWorkDays: true
-    };
-    
-    this.messageService.add({
-      severity: 'info',
-      summary: 'Impostazioni Reset',
-      detail: 'I parametri di ottimizzazione sono stati ripristinati ai valori predefiniti.'
+      if (params['endDate']) {
+        this.endDate = new Date(params['endDate']);
+      }
+      if (params['staffType']) {
+        this.staffType = params['staffType'];
+      }
+      
+      this.loadMetrics();
     });
   }
   
-  analyzeScheduleQuality(): void {
-    if (!this.hasScheduleData) {
-      return;
+  ngOnChanges(changes: SimpleChanges): void {
+    // Ricarica i dati quando cambiano i parametri di input
+    if (changes['startDate'] || changes['endDate'] || changes['staffType']) {
+      this.loadMetrics();
     }
+  }
+  
+  loadMetrics(): void {
+    this.loading = true;
+    this.error = '';
     
-    this.schedulerService.analyzeScheduleQuality(this.shifts, this.staff, this.vacations)
+    this.schedulerService.getScheduleQualityMetrics(this.startDate, this.endDate, this.staffType)
       .subscribe({
-        next: (result) => {
-          // Aggiorna i dati del grafico radar
-          this.scheduleQualityData = {
-            labels: [
-              'Distribuzione Turni', 
-              'Riposo Consecutivo',
-              'Sequenza Turni',
-              'Bilanciamento Weekend',
-              'Preferenze Personali',
-              'Distribuzione Turni Notturni'
-            ],
-            datasets: [
-              {
-                label: 'Punteggio Qualità',
-                data: [
-                  result.workloadDistribution,
-                  result.consecutiveRestDays,
-                  result.shiftSequence,
-                  result.weekendBalance,
-                  result.personalPreferences,
-                  result.nightShiftDistribution
-                ],
-                backgroundColor: 'rgba(25, 118, 210, 0.2)',
-                borderColor: 'rgba(25, 118, 210, 1)',
-                pointBackgroundColor: 'rgba(25, 118, 210, 1)',
-                pointBorderColor: '#fff',
-                pointHoverBackgroundColor: '#fff',
-                pointHoverBorderColor: 'rgba(25, 118, 210, 1)'
-              }
-            ]
-          };
-          
-          // Aggiorna le metriche di qualità
-          this.qualityMetrics = [
-            {
-              name: 'Distribuzione Turni',
-              score: result.workloadDistribution,
-              description: 'Misura quanto equamente sono distribuiti i turni tra il personale.'
-            },
-            {
-              name: 'Riposo Consecutivo',
-              score: result.consecutiveRestDays,
-              description: 'Valuta se i periodi di riposo sono adeguatamente raggruppati.'
-            },
-            {
-              name: 'Sequenza Turni',
-              score: result.shiftSequence,
-              description: 'Misura se la sequenza dei turni segue un pattern ergonomico (es. evitare notte dopo mattina).'
-            },
-            {
-              name: 'Bilanciamento Weekend',
-              score: result.weekendBalance,
-              description: 'Valuta quanto equamente sono distribuiti i weekend liberi.'
-            },
-            {
-              name: 'Preferenze Personali',
-              score: result.personalPreferences,
-              description: 'Misura quanto sono state rispettate le preferenze espresse dal personale.'
-            },
-            {
-              name: 'Distribuzione Turni Notturni',
-              score: result.nightShiftDistribution,
-              description: 'Valuta se i turni notturni sono distribuiti equamente.'
-            }
-          ];
-          
-          this.messageService.add({
-            severity: 'success',
-            summary: 'Analisi Completata',
-            detail: 'L\'analisi della qualità dei turni è stata completata con successo.'
-          });
+        next: (data) => {
+          this.metrics = data;
+          this.qualityScore = Math.round(data.overallQualityScore || 0);
+          this.updateRadarChart();
+          this.loading = false;
         },
-        error: (error) => {
-          console.error('Error analyzing schedule quality', error);
-          this.messageService.add({
-            severity: 'error',
-            summary: 'Errore',
-            detail: 'Si è verificato un errore durante l\'analisi della qualità dei turni.'
-          });
+        error: (err) => {
+          console.error('Errore nel caricamento delle metriche:', err);
+          this.error = 'Impossibile caricare le metriche di qualità del planning';
+          this.loading = false;
         }
       });
   }
   
-  optimizeSchedule(): void {
-    if (!this.hasScheduleData || !this.startDate || !this.endDate) {
+  updateRadarChart(): void {
+    if (!this.metrics) {
       return;
     }
     
-    this.schedulerService.optimizeExistingSchedule(
-      this.shifts,
-      this.startDate,
-      this.endDate,
-      this.optimizationParams
-    ).subscribe({
-      next: (optimizedShifts) => {
-        this.optimizationComplete.emit(optimizedShifts);
-        
-        this.messageService.add({
-          severity: 'success',
-          summary: 'Ottimizzazione Completata',
-          detail: 'I turni sono stati ottimizzati con successo.'
-        });
-        
-        // Aggiorna anche l'analisi della qualità
-        this.shifts = optimizedShifts;
-        this.analyzeScheduleQuality();
-      },
-      error: (error) => {
-        console.error('Error optimizing schedule', error);
-        this.messageService.add({
-          severity: 'error',
-          summary: 'Errore',
-          detail: 'Si è verificato un errore durante l\'ottimizzazione dei turni.'
-        });
+    // Calcola i punteggi normalizzati per il grafico radar
+    const workloadBalanceScore = Math.min(100, Math.max(0, 100 - (this.metrics.maxWorkload - this.metrics.minWorkload) * 10));
+    const weekendFairnessScore = Math.min(100, Math.max(0, 100 - (this.metrics.maxWeekendWorkdays - this.metrics.minWeekendWorkdays) * 20));
+    const shiftVarietyScore = Math.min(100, Math.max(0, 100 - this.countConsecutiveSameTypeShifts() * 5));
+    const restAfterNightScore = Math.min(100, Math.max(0, 100 - this.metrics.nightToMorningViolations * 25));
+    const weekdayWeekendBalanceScore = this.calculateWeekdayWeekendBalance();
+    
+    const data: ChartData<'radar'> = {
+      labels: [
+        'Bilanciamento carico di lavoro',
+        'Equità weekend',
+        'Varietà turni',
+        'Riposo dopo notte',
+        'Equilibrio feriali/festivi'
+      ],
+      datasets: [
+        {
+          label: 'Qualità del planning',
+          data: [
+            workloadBalanceScore,
+            weekendFairnessScore,
+            shiftVarietyScore,
+            restAfterNightScore,
+            weekdayWeekendBalanceScore
+          ],
+          fill: true,
+          backgroundColor: 'rgba(54, 162, 235, 0.2)',
+          borderColor: 'rgb(54, 162, 235)',
+          pointBackgroundColor: 'rgb(54, 162, 235)',
+          pointBorderColor: '#fff',
+          pointHoverBackgroundColor: '#fff',
+          pointHoverBorderColor: 'rgb(54, 162, 235)'
+        }
+      ]
+    };
+    
+    const config: ChartConfiguration<'radar'> = {
+      type: 'radar',
+      data: data,
+      options: {
+        elements: {
+          line: {
+            borderWidth: 3
+          }
+        },
+        scales: {
+          r: {
+            angleLines: {
+              display: true
+            },
+            suggestedMin: 0,
+            suggestedMax: 100
+          }
+        }
       }
-    });
+    };
+    
+    // Distruggi il grafico esistente, se presente
+    if (this.radarChart) {
+      this.radarChart.destroy();
+    }
+    
+    // Crea il nuovo grafico
+    const canvas = document.getElementById('qualityRadarChart') as HTMLCanvasElement;
+    if (canvas) {
+      this.radarChart = new Chart(canvas, config);
+    }
   }
   
-  getMetricClass(score: number): string {
-    if (score >= 8) return 'metric-good';
-    if (score >= 5) return 'metric-average';
-    return 'metric-poor';
+  // Metodo fittizio per calcolare le sequenze di turni dello stesso tipo
+  countConsecutiveSameTypeShifts(): number {
+    // In una versione reale, questo analizzerebbe i turni effettivi
+    // In questa versione dimostrativa, restituiamo un valore basato sulla varianza dei tipi di turno
+    const total = this.metrics.totalMorningShifts + this.metrics.totalAfternoonShifts + this.metrics.totalNightShifts;
+    if (total === 0) return 0;
+    
+    const mRatio = this.metrics.totalMorningShifts / total;
+    const pRatio = this.metrics.totalAfternoonShifts / total;
+    const nRatio = this.metrics.totalNightShifts / total;
+    
+    // Calcola una metrica di varianza semplificata
+    const idealM = 0.4;
+    const idealP = 0.4;
+    const idealN = 0.2;
+    
+    const variance = 
+      Math.abs(mRatio - idealM) + 
+      Math.abs(pRatio - idealP) + 
+      Math.abs(nRatio - idealN);
+    
+    // Trasforma la varianza in un numero di "sequenze problematiche"
+    return Math.round(variance * 10);
+  }
+  
+  // Metodo per calcolare l'equilibrio tra giorni feriali e weekend
+  calculateWeekdayWeekendBalance(): number {
+    if (!this.metrics || this.metrics.avgWeekendWorkdays === 0) {
+      return 100; // Nessun dato, punteggio massimo per default
+    }
+    
+    // Calcola il numero medio di giorni di lavoro a settimana
+    const totalDays = (this.endDate.getTime() - this.startDate.getTime()) / (1000 * 60 * 60 * 24) + 1;
+    const totalWeeks = totalDays / 7;
+    const avgWorkPerWeek = this.metrics.avgWorkload / totalWeeks;
+    
+    // Calcola la percentuale ideale di lavoro nei weekend
+    // Idealmente, il 28.6% dei giorni di lavoro dovrebbero essere nel weekend (2/7)
+    const idealWeekendRatio = 2 / 7; // 28.6%
+    const actualWeekendRatio = this.metrics.avgWeekendWorkdays / avgWorkPerWeek;
+    
+    // Calcola il punteggio basato sulla differenza dal rapporto ideale
+    const deviation = Math.abs(actualWeekendRatio - idealWeekendRatio);
+    const score = 100 - (deviation * 200); // Moltiplica per 200 per amplificare la penalità
+    
+    return Math.min(100, Math.max(0, score));
+  }
+  
+  // Metodo per generare un nuovo planning
+  generateSchedule(): void {
+    this.loading = true;
+    this.error = '';
+    
+    this.schedulerService.generateSchedule(this.startDate, this.endDate, this.staffType, this.optimizationParameters)
+      .subscribe({
+        next: (result) => {
+          console.log('Risultato generazione planning:', result);
+          if (result.success) {
+            // Aggiorna le metriche con quelle restituite dalla generazione
+            this.metrics = result.qualityMetrics;
+            this.qualityScore = Math.round(result.qualityMetrics.overallQualityScore || 0);
+            this.updateRadarChart();
+            
+            // Mostra un messaggio di successo
+            this.showSuccessMessage(`Planning generato con successo: ${result.generatedShifts.length} turni creati`);
+          } else {
+            this.error = result.message || 'Errore nella generazione del planning';
+          }
+          this.loading = false;
+        },
+        error: (err) => {
+          console.error('Errore nella generazione del planning:', err);
+          this.error = 'Impossibile generare il planning';
+          this.loading = false;
+        }
+      });
+  }
+  
+  // Metodo per cancellare i turni esistenti
+  clearExistingShifts(): void {
+    this.loading = true;
+    this.error = '';
+    
+    this.schedulerService.deleteShiftsByDateRange(this.startDate, this.endDate)
+      .subscribe({
+        next: (result) => {
+          console.log('Risultato cancellazione turni:', result);
+          this.showSuccessMessage(`Eliminati ${result.deletedCount} turni`);
+          this.loadMetrics(); // Ricarica le metriche
+        },
+        error: (err) => {
+          console.error('Errore nella cancellazione dei turni:', err);
+          this.error = 'Impossibile cancellare i turni esistenti';
+          this.loading = false;
+        }
+      });
+  }
+  
+  // Metodo fittizio per mostrare messaggi di successo
+  private showSuccessMessage(message: string): void {
+    // In una versione reale, questo utilizzerebbe un servizio di notifica/toast
+    console.log('Messaggio di successo:', message);
+    // Qui potremmo usare il servizio MessageService di PrimeNG per mostrare un toast
   }
 }

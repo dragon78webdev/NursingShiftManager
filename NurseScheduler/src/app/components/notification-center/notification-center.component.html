@@ -1,0 +1,104 @@
+<div class="notification-center">
+  <!-- Pulsante di notifica con badge -->
+  <button class="notification-button" (click)="toggleNotificationPanel()">
+    <i class="pi pi-bell"></i>
+    <span class="notification-badge" *ngIf="unreadCount > 0">{{ unreadCount }}</span>
+  </button>
+
+  <!-- Pannello delle notifiche -->
+  <div class="notification-panel" *ngIf="showNotificationPanel">
+    <div class="notification-header">
+      <h3>Notifiche</h3>
+      <div class="notification-actions">
+        <button pButton 
+                pRipple 
+                icon="pi pi-check-square" 
+                class="p-button-text p-button-sm" 
+                [disabled]="unreadCount === 0"
+                (click)="markAllAsRead()" 
+                pTooltip="Segna tutte come lette"></button>
+        <button pButton 
+                pRipple 
+                icon="pi pi-times" 
+                class="p-button-text p-button-sm" 
+                (click)="toggleNotificationPanel()" 
+                pTooltip="Chiudi"></button>
+      </div>
+    </div>
+
+    <div class="notification-content">
+      <!-- Stato di caricamento -->
+      <div *ngIf="loading" class="notification-loading">
+        <p-progressSpinner [style]="{width: '50px', height: '50px'}"></p-progressSpinner>
+      </div>
+
+      <!-- Nessuna notifica -->
+      <div *ngIf="!loading && notifications.length === 0" class="notification-empty">
+        <i class="pi pi-inbox"></i>
+        <p>Nessuna notifica</p>
+      </div>
+
+      <!-- Lista delle notifiche -->
+      <div *ngIf="!loading && notifications.length > 0" class="notification-list">
+        <div *ngFor="let notification of notifications" 
+             class="notification-item" 
+             [class.unread]="!notification.read"
+             (click)="openNotification(notification)">
+          
+          <div class="notification-icon" [ngClass]="notification.type?.toLowerCase() || 'info'">
+            <i class="pi" [ngClass]="{
+              'pi-info-circle': notification.type === 'Info',
+              'pi-check-circle': notification.type === 'Success',
+              'pi-exclamation-triangle': notification.type === 'Warning',
+              'pi-times-circle': notification.type === 'Error',
+              'pi-question-circle': notification.type === 'Request',
+              'pi-bell': !notification.type
+            }"></i>
+          </div>
+          
+          <div class="notification-details">
+            <div class="notification-title">{{ notification.title }}</div>
+            <div class="notification-message">{{ notification.message }}</div>
+            <div class="notification-time">{{ notification.createdAt | date:'dd/MM/yyyy HH:mm' }}</div>
+          </div>
+          
+          <div class="notification-actions">
+            <button pButton 
+                    pRipple 
+                    icon="pi pi-trash" 
+                    class="p-button-text p-button-rounded p-button-sm" 
+                    (click)="deleteNotification(notification, $event)" 
+                    pTooltip="Elimina"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sezione per le impostazioni delle notifiche push -->
+    <div class="notification-push-settings" *ngIf="pushSupported">
+      <p-divider></p-divider>
+      <div class="notification-push-header">
+        <h4>Notifiche Push</h4>
+        <p-inputSwitch [(ngModel)]="pushEnabled" 
+                       [disabled]="!pushSupported"
+                       (onChange)="pushEnabled ? disablePushNotifications() : requestPushPermission()"></p-inputSwitch>
+      </div>
+      <p class="notification-push-description">
+        {{ pushEnabled ? 'Riceverai notifiche anche quando non stai utilizzando l\'app.' : 'Attiva per ricevere notifiche anche quando non stai utilizzando l\'app.' }}
+      </p>
+      
+      <div class="notification-push-test" *ngIf="pushEnabled">
+        <button pButton 
+                pRipple 
+                label="Invia notifica di test" 
+                icon="pi pi-bell" 
+                class="p-button-outlined p-button-sm" 
+                (click)="sendTestNotification()"></button>
+      </div>
+      
+      <p class="notification-push-unsupported" *ngIf="!pushSupported">
+        Il tuo browser non supporta le notifiche push.
+      </p>
+    </div>
+  </div>
+</div>

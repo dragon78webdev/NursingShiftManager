@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, date, timestamp, jsonb, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, date, timestamp, jsonb, pgEnum, real, decimal } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -6,6 +6,7 @@ import { z } from "zod";
 export const roleEnum = pgEnum('role', ['nurse', 'oss', 'head_nurse']);
 export const shiftTypeEnum = pgEnum('shift_type', ['M', 'P', 'N', 'R', 'F']);
 export const requestStatusEnum = pgEnum('request_status', ['pending', 'approved', 'rejected']);
+export const complexityFactorEnum = pgEnum('complexity_factor', ['workload', 'staff_experience', 'patient_acuity', 'time_of_day', 'consecutive_shifts', 'staff_preferences']);
 
 // Additional enums for frontend usage
 export enum ShiftRequestStatus {
@@ -114,6 +115,26 @@ export const scheduleGenerations = pgTable("schedule_generations", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Shift complexity scores
+export const shiftComplexityScores = pgTable("shift_complexity_scores", {
+  id: serial("id").primaryKey(),
+  shiftId: integer("shift_id").references(() => shifts.id).notNull(),
+  complexityScore: decimal("complexity_score", { precision: 4, scale: 2 }).notNull(),
+  aiAnalysisDetails: jsonb("ai_analysis_details"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Complexity factors for each shift
+export const complexityFactors = pgTable("complexity_factors", {
+  id: serial("id").primaryKey(),
+  scoreId: integer("score_id").references(() => shiftComplexityScores.id).notNull(),
+  factorType: complexityFactorEnum("factor_type").notNull(),
+  factorScore: decimal("factor_score", { precision: 3, scale: 1 }).notNull(),
+  explanation: text("explanation"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // Define insert schemas using drizzle-zod
 export const insertUserSchema = createInsertSchema(users).omit({ 
   id: true,
@@ -159,6 +180,17 @@ export const insertScheduleGenerationSchema = createInsertSchema(scheduleGenerat
   createdAt: true
 });
 
+export const insertShiftComplexityScoreSchema = createInsertSchema(shiftComplexityScores).omit({ 
+  id: true, 
+  createdAt: true,
+  updatedAt: true
+});
+
+export const insertComplexityFactorSchema = createInsertSchema(complexityFactors).omit({ 
+  id: true, 
+  createdAt: true
+});
+
 // Export types
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
@@ -184,6 +216,12 @@ export type Notification = typeof notifications.$inferSelect;
 export type InsertScheduleGeneration = z.infer<typeof insertScheduleGenerationSchema>;
 export type ScheduleGeneration = typeof scheduleGenerations.$inferSelect;
 
+export type InsertShiftComplexityScore = z.infer<typeof insertShiftComplexityScoreSchema>;
+export type ShiftComplexityScore = typeof shiftComplexityScores.$inferSelect;
+
+export type InsertComplexityFactor = z.infer<typeof insertComplexityFactorSchema>;
+export type ComplexityFactor = typeof complexityFactors.$inferSelect;
+
 // Role type for client-side use
 export type Role = 'nurse' | 'oss' | 'head_nurse';
 
@@ -192,3 +230,6 @@ export type ShiftType = 'M' | 'P' | 'N' | 'R' | 'F';
 
 // Request status type for client-side use
 export type RequestStatus = 'pending' | 'approved' | 'rejected';
+
+// Complexity factor type for client-side use
+export type ComplexityFactorType = 'workload' | 'staff_experience' | 'patient_acuity' | 'time_of_day' | 'consecutive_shifts' | 'staff_preferences';

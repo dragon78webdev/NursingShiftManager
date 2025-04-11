@@ -7,8 +7,12 @@ import {
   delegations, Delegation, InsertDelegation,
   notifications, Notification, InsertNotification,
   scheduleGenerations, ScheduleGeneration, InsertScheduleGeneration,
-  Role, ShiftType, RequestStatus
+  shiftComplexityScores, ShiftComplexityScore, InsertShiftComplexityScore,
+  complexityFactors, ComplexityFactor, InsertComplexityFactor,
+  Role, ShiftType, RequestStatus, ComplexityFactorType
 } from "@shared/schema";
+import { db } from "./db";
+import { eq, and, gte, lte, or, desc, isNull } from "drizzle-orm";
 
 // Storage interface that defines all the methods needed for the application
 export interface IStorage {
@@ -71,6 +75,20 @@ export interface IStorage {
   getScheduleGenerationById(id: number): Promise<ScheduleGeneration | undefined>;
   createScheduleGeneration(scheduleGeneration: InsertScheduleGeneration): Promise<ScheduleGeneration>;
   listScheduleGenerations(): Promise<ScheduleGeneration[]>;
+  
+  // Shift complexity scoring methods
+  getShiftComplexityScoreById(id: number): Promise<ShiftComplexityScore | undefined>;
+  getShiftComplexityScoreByShiftId(shiftId: number): Promise<ShiftComplexityScore | undefined>;
+  createShiftComplexityScore(score: InsertShiftComplexityScore): Promise<ShiftComplexityScore>;
+  updateShiftComplexityScore(id: number, data: Partial<ShiftComplexityScore>): Promise<ShiftComplexityScore | undefined>;
+  listShiftComplexityScores(): Promise<ShiftComplexityScore[]>;
+  listShiftComplexityScoresByDateRange(startDate: Date, endDate: Date): Promise<ShiftComplexityScore[]>;
+  
+  // Complexity factors methods
+  getComplexityFactorById(id: number): Promise<ComplexityFactor | undefined>;
+  createComplexityFactor(factor: InsertComplexityFactor): Promise<ComplexityFactor>;
+  listComplexityFactorsByScoreId(scoreId: number): Promise<ComplexityFactor[]>;
+  listComplexityFactorsByType(factorType: ComplexityFactorType): Promise<ComplexityFactor[]>;
 }
 
 // In-memory implementation of the storage interface
@@ -83,6 +101,8 @@ export class MemStorage implements IStorage {
   private delegations: Map<number, Delegation>;
   private notifications: Map<number, Notification>;
   private scheduleGenerations: Map<number, ScheduleGeneration>;
+  private shiftComplexityScores: Map<number, ShiftComplexityScore>;
+  private complexityFactors: Map<number, ComplexityFactor>;
   
   private nextUserId = 1;
   private nextStaffId = 1;
@@ -92,6 +112,8 @@ export class MemStorage implements IStorage {
   private nextDelegationId = 1;
   private nextNotificationId = 1;
   private nextScheduleGenerationId = 1;
+  private nextShiftComplexityScoreId = 1;
+  private nextComplexityFactorId = 1;
 
   constructor() {
     this.users = new Map();

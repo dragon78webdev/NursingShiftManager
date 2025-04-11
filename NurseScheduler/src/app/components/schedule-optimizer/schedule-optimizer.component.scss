@@ -1,0 +1,208 @@
+.optimizer-container {
+  padding: 1rem;
+  
+  .card {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    margin-bottom: 1.5rem;
+    
+    .card-header {
+      padding: 1.5rem;
+      border-bottom: 1px solid #f0f0f0;
+      
+      h2 {
+        margin: 0;
+        font-size: 1.5rem;
+        color: #2c3e50;
+      }
+      
+      h3 {
+        margin: 0;
+        font-size: 1.2rem;
+        color: #2c3e50;
+      }
+      
+      .subtitle {
+        margin: 0.5rem 0 0;
+        font-size: 0.9rem;
+        color: #7f8c8d;
+      }
+    }
+    
+    .card-body {
+      padding: 1.5rem;
+    }
+  }
+  
+  .loading-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    
+    p {
+      margin-top: 1rem;
+      color: #7f8c8d;
+    }
+  }
+  
+  .error-container {
+    margin-bottom: 1.5rem;
+  }
+  
+  .chart-container {
+    height: 400px;
+    width: 100%;
+    position: relative;
+  }
+  
+  .score-panel {
+    padding: 1rem;
+    
+    .quality-score {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-bottom: 2rem;
+      
+      .score-circle {
+        width: 120px;
+        height: 120px;
+        border-radius: 50%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: white;
+        
+        &.excellent {
+          background: linear-gradient(135deg, #4caf50, #8bc34a);
+        }
+        
+        &.good {
+          background: linear-gradient(135deg, #8bc34a, #cddc39);
+        }
+        
+        &.average {
+          background: linear-gradient(135deg, #ffc107, #ff9800);
+        }
+        
+        &.poor {
+          background: linear-gradient(135deg, #ff9800, #f44336);
+        }
+        
+        &.critical {
+          background: linear-gradient(135deg, #f44336, #d32f2f);
+        }
+      }
+      
+      .score-label {
+        margin-top: 0.5rem;
+        font-size: 1rem;
+        color: #7f8c8d;
+      }
+    }
+    
+    .metrics-summary {
+      margin-bottom: 2rem;
+      
+      h3 {
+        margin-top: 0;
+        margin-bottom: 1rem;
+        font-size: 1.2rem;
+        color: #2c3e50;
+      }
+      
+      .metric-item {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 0.5rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid #f0f0f0;
+        
+        &:last-child {
+          border-bottom: none;
+        }
+        
+        .metric-label {
+          color: #7f8c8d;
+        }
+        
+        .metric-value {
+          font-weight: bold;
+          color: #2c3e50;
+        }
+      }
+    }
+    
+    .optimization-controls {
+      h3 {
+        margin-top: 0;
+        margin-bottom: 1rem;
+        font-size: 1.2rem;
+        color: #2c3e50;
+      }
+      
+      .p-field {
+        margin-bottom: 1.5rem;
+        
+        label {
+          display: block;
+          margin-bottom: 0.5rem;
+          color: #7f8c8d;
+        }
+        
+        small {
+          display: block;
+          margin-top: 0.25rem;
+          text-align: right;
+          color: #7f8c8d;
+        }
+      }
+      
+      .buttons-container {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 2rem;
+      }
+    }
+  }
+  
+  .metric-detail-item {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #f0f0f0;
+    
+    .metric-detail-label {
+      color: #7f8c8d;
+    }
+    
+    .metric-detail-value {
+      font-weight: bold;
+      color: #2c3e50;
+    }
+  }
+  
+  .no-data {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem;
+    color: #95a5a6;
+    
+    i {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+    }
+    
+    p {
+      font-size: 1.2rem;
+    }
+  }
+}
