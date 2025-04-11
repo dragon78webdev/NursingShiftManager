@@ -6,7 +6,8 @@ import {
   Shift,
   Staff,
   User,
-  ComplexityFactorType
+  ComplexityFactorType,
+  Role
 } from "@shared/schema";
 import { storage } from "./storage";
 
@@ -127,7 +128,51 @@ INSTRUCTIONS:
       response_format: { type: "json_object" }
     });
 
-    const analysisResult = JSON.parse(response.choices[0].message.content) as ShiftComplexityAnalysis;
+    const content = response.choices[0].message.content || "{}";
+    // Use safe JSON parse to handle any potential parsing errors
+    let analysisResult: ShiftComplexityAnalysis;
+    try {
+      analysisResult = JSON.parse(content) as ShiftComplexityAnalysis;
+    } catch (parseError) {
+      console.error("Error parsing OpenAI response:", parseError);
+      // Provide a default result
+      analysisResult = {
+        overall_complexity: 5.0,
+        factors: [
+          {
+            factor_type: COMPLEXITY_FACTORS.WORKLOAD,
+            score: 5.0,
+            explanation: "Default value due to parsing error"
+          },
+          {
+            factor_type: COMPLEXITY_FACTORS.STAFF_EXPERIENCE,
+            score: 5.0,
+            explanation: "Default value due to parsing error"
+          },
+          {
+            factor_type: COMPLEXITY_FACTORS.PATIENT_ACUITY,
+            score: 5.0,
+            explanation: "Default value due to parsing error"
+          },
+          {
+            factor_type: COMPLEXITY_FACTORS.TIME_OF_DAY,
+            score: 5.0,
+            explanation: "Default value due to parsing error"
+          },
+          {
+            factor_type: COMPLEXITY_FACTORS.CONSECUTIVE_SHIFTS,
+            score: 5.0,
+            explanation: "Default value due to parsing error"
+          },
+          {
+            factor_type: COMPLEXITY_FACTORS.STAFF_PREFERENCES,
+            score: 5.0,
+            explanation: "Default value due to parsing error"
+          }
+        ],
+        summary: "Analysis failed due to parsing error. Using default values."
+      };
+    }
     return analysisResult;
   } catch (error) {
     console.error("Error analyzing shift complexity with OpenAI:", error);

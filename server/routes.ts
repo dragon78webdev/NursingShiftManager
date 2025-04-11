@@ -1363,5 +1363,110 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.sendFile("service-worker.js", { root: "./dist/public" });
   });
 
+  // Complexity scoring routes
+  // Get complexity score for a shift
+  app.get("/api/complexity/shift/:id", isAuthenticated, async (req, res) => {
+    try {
+      const shiftId = parseInt(req.params.id);
+      const shift = await storage.getShiftById(shiftId);
+      
+      if (!shift) {
+        return res.status(404).json({ message: "Shift not found" });
+      }
+      
+      // Calculate or retrieve complexity score
+      const complexityData = await getShiftComplexityScore(shiftId);
+      
+      res.json(complexityData);
+    } catch (error) {
+      console.error("Error retrieving shift complexity:", error);
+      res.status(500).json({ message: (error as Error).message });
+    }
+  });
+
+  // Analyze complexity for all shifts in a date range
+  app.post("/api/complexity/analyze", isHeadNurseOrDelegate, async (req, res) => {
+    try {
+      const requestSchema = z.object({
+        startDate: z.string().refine(val => !isNaN(Date.parse(val)), {
+          message: "Start date must be a valid date string"
+        }),
+        endDate: z.string().refine(val => !isNaN(Date.parse(val)), {
+          message: "End date must be a valid date string"
+        }),
+        role: z.enum(["nurse", "oss", "head_nurse"]).optional()
+      });
+      
+      const { startDate, endDate, role } = requestSchema.parse(req.body);
+      
+      // Start analysis as a background task
+      res.status(202).json({ message: "Complexity analysis started" });
+      
+      // Execute in background after sending response
+      setTimeout(async () => {
+        try {
+          const user = req.user as any;
+          
+          const analysisResult = await analyzeScheduleComplexity(
+            new Date(startDate),
+            new Date(endDate),
+            role
+          );
+          
+          // Send notification to the user who requested the analysis
+          await storage.createNotification({
+            userId: user.id,
+            title: "Analisi complessità completata",
+            message: `L'analisi di complessità per il periodo ${new Date(startDate).toLocaleDateString('it-IT')} - ${new Date(endDate).toLocaleDateString('it-IT')} è stata completata.`,
+            type: "complexity_analysis"
+          });
+          
+          // Send push notification
+          sendPushNotification(user.id, {
+            type: "complexity_analysis",
+            title: "Analisi complessità completata",
+            message: `L'analisi di complessità per il periodo ${new Date(startDate).toLocaleDateString('it-IT')} - ${new Date(endDate).toLocaleDateString('it-IT')} è stata completata.`,
+            data: {
+              averageComplexity: analysisResult.averageComplexity,
+              highestComplexity: analysisResult.highestComplexity,
+              totalShifts: analysisResult.totalShifts
+            }
+          });
+        } catch (error) {
+          console.error("Error in background complexity analysis:", error);
+        }
+      }, 0);
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  });
+
+  // Get complexity analysis results for a date range
+  app.get("/api/complexity/results", isHeadNurseOrDelegate, async (req, res) => {
+    try {
+      const startDate = req.query.startDate as string;
+      const endDate = req.query.endDate as string;
+      const role = req.query.role as "nurse" | "oss" | "head_nurse" | undefined;
+      
+      if (!startDate || !endDate) {
+        return res.status(400).json({ message: "startDate and endDate are required" });
+      }
+      
+      if (isNaN(Date.parse(startDate)) || isNaN(Date.parse(endDate))) {
+        return res.status(400).json({ message: "Invalid date format" });
+      }
+      
+      const analysisResult = await analyzeScheduleComplexity(
+        new Date(startDate),
+        new Date(endDate),
+        role
+      );
+      
+      res.json(analysisResult);
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  });
+
   return httpServer;
 }
