@@ -1,0 +1,25 @@
+<div class="app-container">
+  <header>
+    <div class="logo-container">
+      <h1>NurseScheduler</h1>
+    </div>
+    <p-menubar [model]="items">
+      <ng-template pTemplate="end">
+        <div class="user-profile">
+          <p-avatar icon="pi pi-user" styleClass="mr-2" size="small"></p-avatar>
+          <span>Nome Utente</span>
+        </div>
+      </ng-template>
+    </p-menubar>
+  </header>
+
+  <main>
+    <router-outlet></router-outlet>
+  </main>
+
+  <footer>
+    <p>© 2025 NurseScheduler - Sistema Gestione Turni</p>
+  </footer>
+</div>
+
+<p-toast></p-toast>
