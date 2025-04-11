@@ -1,0 +1,13 @@
+run = "dotnet run --project backend"
+modules = ["dotnet-8.0:v1-20240320-46adce58"]
+
+[env]
+DOTNET_NOLOGO = "1"
+DOTNET_CLI_TELEMETRY_OPTOUT = "1"
+
+[nix]
+channel = "stable-23_11"
+
+[deployment]
+run = ["sh", "-c", "dotnet run --project backend"]
+deploymentTarget = "cloudrun"
